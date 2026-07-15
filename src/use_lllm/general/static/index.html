@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Use-LLLM General</title>
+  <link rel="stylesheet" href="./static/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand-block">
+      <span class="brand-mark" aria-hidden="true">U</span>
+      <div>
+        <strong>Use-LLLM</strong>
+        <span>General workspace</span>
+      </div>
+    </div>
+    <div id="endpoint-banner" class="endpoint-banner" aria-live="polite">
+      <span class="pulse"></span>
+      <div><small>送信先</small><strong>確認中...</strong></div>
+    </div>
+    <nav class="header-actions" aria-label="画面切替">
+      <button id="refresh-status" class="icon-button" title="状態を更新" aria-label="状態を更新">↻</button>
+      <button id="toggle-settings" class="button secondary" aria-controls="settings-panel">接続と設定</button>
+    </nav>
+  </header>
+
+  <div class="app-shell">
+    <aside class="session-rail">
+      <div class="rail-heading">
+        <div><span class="eyebrow">LOCAL HISTORY</span><h2>チャット</h2></div>
+        <button id="new-session" class="icon-button prominent" aria-label="新しいチャット">＋</button>
+      </div>
+      <nav id="session-list" class="session-list" aria-label="チャット履歴"></nav>
+      <div class="rail-footer">
+        <div id="system-summary" class="system-summary"><span class="status-dot"></span>状態を確認中</div>
+        <p>会話とツール履歴はこのPCだけに保存されます。</p>
+      </div>
+    </aside>
+
+    <main class="conversation-panel">
+      <section id="welcome" class="welcome-state">
+        <span class="welcome-kicker">LOCAL MODEL · LOCAL TOOLS</span>
+        <h1>ローカルLLMと、<br>道具を持った対話を。</h1>
+        <p>Ollamaモデルへ相談し、接続したMCPツールを必要なときだけ使います。書き込みや未知の操作は、あなたが確認するまで止まります。</p>
+        <div class="starter-grid">
+          <button class="starter" data-prompt="このPCで利用できるMCPツールを整理して、できることを教えてください。"><span>01</span>利用できるツールを確認</button>
+          <button class="starter" data-prompt="次の作業を安全な手順に分解してください。"><span>02</span>作業手順を相談</button>
+          <button class="starter" data-prompt="観測結果と推測を分けて説明してください。"><span>03</span>結果を慎重に解釈</button>
+        </div>
+      </section>
+
+      <section id="chat-workspace" class="chat-workspace hidden">
+        <div class="conversation-heading">
+          <div><span class="eyebrow">CONVERSATION</span><h1 id="session-title">新しいチャット</h1></div>
+          <button id="delete-session" class="button quiet danger-text">履歴を削除</button>
+        </div>
+        <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+      </section>
+
+      <footer class="composer-wrap">
+        <form id="chat-form" class="composer">
+          <textarea id="chat-input" rows="2" placeholder="メッセージを入力。Shift + Enterで改行" aria-label="メッセージ"></textarea>
+          <div class="composer-footer">
+            <div id="composer-status" class="composer-status">準備完了</div>
+            <div>
+              <button id="cancel-chat" type="button" class="button quiet hidden">停止</button>
+              <button id="send-chat" type="submit" class="send-button" aria-label="送信">送信 <span>↑</span></button>
+            </div>
+          </div>
+        </form>
+        <p class="disclaimer">モデルの回答やツール結果は重要な判断の前に確認してください。</p>
+      </footer>
+    </main>
+
+    <aside id="settings-panel" class="settings-panel" aria-label="接続と設定">
+      <div class="settings-heading">
+        <div><span class="eyebrow">CONNECTIONS</span><h2>接続と設定</h2></div>
+        <button id="close-settings" class="icon-button" aria-label="設定を閉じる">×</button>
+      </div>
+
+      <section class="settings-section">
+        <div class="section-title"><h3>Ollama endpoints</h3><button id="add-endpoint" class="mini-button">追加</button></div>
+        <div id="endpoint-list" class="connection-list"></div>
+        <form id="endpoint-form" class="settings-form hidden">
+          <input id="endpoint-original" type="hidden">
+          <label>名前<input id="endpoint-name" required placeholder="lab-server"></label>
+          <label>URL<input id="endpoint-url" required placeholder="http://127.0.0.1:11434"></label>
+          <label>モデル<input id="endpoint-model" required placeholder="qwen3:14b"></label>
+          <label>信頼境界<select id="endpoint-trust"><option value="loopback">loopbackのみ</option><option value="lan_allowed">LAN送信を明示許可</option></select></label>
+          <p class="form-warning">LAN許可時、プロンプトは指定ホストへ送信されます。</p>
+          <div class="form-actions"><button type="button" class="button quiet form-cancel">取消</button><button class="button primary">保存</button></div>
+        </form>
+      </section>
+
+      <section class="settings-section">
+        <div class="section-title"><h3>MCP servers</h3><button id="add-server" class="mini-button">追加</button></div>
+        <div id="server-list" class="connection-list"></div>
+        <form id="server-form" class="settings-form hidden">
+          <input id="server-original" type="hidden">
+          <label>名前<input id="server-name" required placeholder="my-server"></label>
+          <label>コマンド<input id="server-command" required placeholder="python"></label>
+          <label>引数（1行1引数）<textarea id="server-args" rows="3" placeholder="C:\path with spaces\server.py"></textarea></label>
+          <label>作業フォルダ<input id="server-cwd" placeholder="C:\path"></label>
+          <label class="check-row"><input id="server-autostart" type="checkbox">起動時に接続を試す</label>
+          <label class="check-row"><input id="server-readonly" type="checkbox">確定read-onlyツールを自動実行</label>
+          <p class="form-warning">未知・書き込み・外部通信ツールは、この設定に関係なく実行前に確認します。</p>
+          <div class="form-actions"><button type="button" class="button quiet form-cancel">取消</button><button class="button primary">保存</button></div>
+        </form>
+      </section>
+
+      <section class="settings-section tools-section">
+        <div class="section-title"><h3>Connected tools</h3><span id="tool-count" class="count-badge">0</span></div>
+        <p class="muted">衝突を避けるため server::tool 形式で表示します。</p>
+        <div id="tool-list" class="tool-list"><p class="muted">MCPサーバーを接続すると表示されます。</p></div>
+      </section>
+    </aside>
+  </div>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="./vendor/plotly.min.js"></script>
+  <script src="./static/pca-plot.js"></script>
+  <script src="./static/app.js"></script>
+</body>
+</html>
