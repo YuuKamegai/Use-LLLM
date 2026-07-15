@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from use_lllm.core.config import ConfigurationError, MCPServerConfig, OllamaConfig
@@ -51,7 +51,9 @@ class OllamaConfigTrustTests(unittest.TestCase):
             config.validate()
 
     def test_lan_url_allowed_when_allow_lan_true(self) -> None:
-        config = OllamaConfig(base_url="http://10.242.145.97:11434", model="qwen3:14b", allow_lan=True)
+        config = OllamaConfig(
+            base_url="http://10.242.145.97:11434", model="qwen3:14b", allow_lan=True
+        )
         config.validate()  # 例外を投げない
 
     def test_allow_lan_still_requires_http_scheme(self) -> None:

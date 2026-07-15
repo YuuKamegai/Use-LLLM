@@ -38,12 +38,8 @@ RULES: dict[str, ToolStateRule] = {
     ),
     "ms-data-parser::arf_list_tags": ToolStateRule(requires=("arf_dataset",)),
     "ms-data-parser::arf_list_classes": ToolStateRule(requires=("arf_dataset",)),
-    "ms-data-parser::arf_list_sample_roles": ToolStateRule(
-        requires=("arf_dataset",)
-    ),
-    "ms-data-parser::arf_differential": ToolStateRule(
-        requires=("arf_dataset",)
-    ),
+    "ms-data-parser::arf_list_sample_roles": ToolStateRule(requires=("arf_dataset",)),
+    "ms-data-parser::arf_differential": ToolStateRule(requires=("arf_dataset",)),
     "ms-data-parser::save_pca_figure": ToolStateRule(requires=("pca_result",)),
 }
 
@@ -69,9 +65,7 @@ def indicates_missing_state(tool_name: str, result_text: str) -> bool:
     )
 
 
-def build_replay_plan(
-    target_tool: str, invocations: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
+def build_replay_plan(target_tool: str, invocations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return the minimal successful replay-safe chain required by target_tool."""
 
     target_rule = rule_for(target_tool)
@@ -96,8 +90,7 @@ def build_replay_plan(
         providers = [
             item
             for item in candidates
-            if int(item["id"]) < before_id
-            and state in rule_for(str(item["tool_name"])).provides
+            if int(item["id"]) < before_id and state in rule_for(str(item["tool_name"])).provides
         ]
         if not providers:
             resolving.remove(marker)

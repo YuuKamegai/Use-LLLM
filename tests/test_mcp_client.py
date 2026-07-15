@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import unittest
-
+from dataclasses import dataclass
 from pathlib import Path
 
 from use_lllm.core.config import MCPServerConfig
@@ -63,9 +62,7 @@ class ToolDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             await list_all_tools(session)
 
     async def test_read_only_smoke_rejects_non_allowlisted_tool(self) -> None:
-        client = MCPClient(
-            MCPServerConfig(command=Path(__file__), server_script=Path(__file__))
-        )
+        client = MCPClient(MCPServerConfig(command=Path(__file__), server_script=Path(__file__)))
 
         with self.assertRaisesRegex(MCPConnectionError, "許可されていない"):
             await client.call_read_only_smoke_tool("write_report")

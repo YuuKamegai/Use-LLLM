@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from use_lllm.core.config import ConfigurationError
-from use_lllm.core.endpoints import Endpoint, TRUST_LAN_ALLOWED
+from use_lllm.core.endpoints import TRUST_LAN_ALLOWED, Endpoint
 from use_lllm.core.settings_store import (
-    MCPServerSpec,
     MS_DATA_PARSER,
+    MCPServerSpec,
     Settings,
     default_settings,
     load_settings,
@@ -50,12 +50,21 @@ class RoundTripTests(unittest.TestCase):
     def _settings(self) -> Settings:
         return Settings(
             endpoints=(
-                Endpoint(name="local", base_url="http://127.0.0.1:11434", default_model="qwen3:14b"),
-                Endpoint(name="lab", base_url="http://10.242.145.97:11434", trust=TRUST_LAN_ALLOWED),
+                Endpoint(
+                    name="local", base_url="http://127.0.0.1:11434", default_model="qwen3:14b"
+                ),
+                Endpoint(
+                    name="lab", base_url="http://10.242.145.97:11434", trust=TRUST_LAN_ALLOWED
+                ),
             ),
             selected_endpoint="lab",
             mcp_servers=(
-                MCPServerSpec(name="ms-data-parser", command="python", args=("server.py",), read_only_auto=True),
+                MCPServerSpec(
+                    name="ms-data-parser",
+                    command="python",
+                    args=("server.py",),
+                    read_only_auto=True,
+                ),
                 MCPServerSpec(name="other", command="node", args=("mcp.js",), env=(("K", "V"),)),
             ),
         )

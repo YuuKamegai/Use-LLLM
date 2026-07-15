@@ -23,12 +23,34 @@ GUI ランチャ（`Use-LLLM-WebUI.exe`）は `Start-WebUI.ps1` を起動して�
 再ビルド: `.\Build-WebUI-Launcher.ps1`（.NET 10 SDK 必要）。
 同梱の `Use-LLLM-WebUI.exe` は framework-dependent ビルドのため、実行には .NET 10 Desktop Runtime のインストールが必要（SDK は再ビルド時のみ必要）。
 
+## 開発環境
+
+開発依存を含む仮想環境を `uv` で同期する。
+
+```powershell
+cd C:\Users\yuu18\Use-LLLM
+uv sync --dev
+```
+
+## 品質チェック
+
+```powershell
+uv run ruff check .
+uv run ruff format --check .
+```
+
+Ruff の安全な自動修正とフォーマットを適用する場合:
+
+```powershell
+uv run ruff check . --fix
+uv run ruff format .
+```
+
 ## テスト
 
 ```powershell
 cd C:\Users\yuu18\Use-LLLM
-$env:PYTHONPATH = "src"
-python -m pytest tests -v
+uv run pytest tests -v
 ```
 
 ## 構成

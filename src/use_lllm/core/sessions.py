@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import sqlite3
 import threading
-from typing import Any, Iterator
 import uuid
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterator
 
 
 def utc_now() -> str:
@@ -27,9 +27,7 @@ def compact_tool_result(text: str, limit: int = 2000) -> str:
         return value
     head = max(1, limit - 320)
     return (
-        value[:head]
-        + f"\n\n...[tool result compacted: {len(value)} chars]...\n\n"
-        + value[-240:]
+        value[:head] + f"\n\n...[tool result compacted: {len(value)} chars]...\n\n" + value[-240:]
     )
 
 
@@ -171,13 +169,11 @@ class SessionStore:
         with self._lock, self._connection() as connection:
             connection.executescript(schema)
             columns = {
-                row["name"]
-                for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+                row["name"] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
             }
             if "surface" not in columns:
                 connection.execute(
-                    "ALTER TABLE sessions ADD COLUMN surface TEXT NOT NULL "
-                    "DEFAULT 'lipidomics'"
+                    "ALTER TABLE sessions ADD COLUMN surface TEXT NOT NULL DEFAULT 'lipidomics'"
                 )
             interrupted = connection.execute(
                 "SELECT DISTINCT session_id FROM events WHERE status='running'"
@@ -342,7 +338,15 @@ class SessionStore:
             cursor = connection.execute(
                 """INSERT INTO events(session_id, kind, status, payload_json,
                 parent_event_id, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (session_id, kind, status, json.dumps(payload, ensure_ascii=False), parent_event_id, now, completed),
+                (
+                    session_id,
+                    kind,
+                    status,
+                    json.dumps(payload, ensure_ascii=False),
+                    parent_event_id,
+                    now,
+                    completed,
+                ),
             )
             event_id = int(cursor.lastrowid)
             connection.execute("UPDATE sessions SET updated_at=? WHERE id=?", (now, session_id))
@@ -374,11 +378,19 @@ class SessionStore:
             raise KeyError(f"event:{event_id}")
         return events[0]
 
-    def add_message(self, session_id: str, role: str, content: str, metadata: dict[str, Any] | None = None) -> int:
+    def add_message(
+        self, session_id: str, role: str, content: str, metadata: dict[str, Any] | None = None
+    ) -> int:
         with self._lock, self._connection() as connection:
             cursor = connection.execute(
                 "INSERT INTO messages(session_id, role, content, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)",
-                (session_id, role, content, json.dumps(metadata or {}, ensure_ascii=False), utc_now()),
+                (
+                    session_id,
+                    role,
+                    content,
+                    json.dumps(metadata or {}, ensure_ascii=False),
+                    utc_now(),
+                ),
             )
             return int(cursor.lastrowid)
 
@@ -429,8 +441,7 @@ class SessionStore:
     def list_conversation_summaries(self, session_id: str) -> list[dict[str, Any]]:
         with self._connection() as connection:
             rows = connection.execute(
-                "SELECT * FROM conversation_summaries WHERE session_id=? "
-                "ORDER BY last_message_id",
+                "SELECT * FROM conversation_summaries WHERE session_id=? ORDER BY last_message_id",
                 (session_id,),
             ).fetchall()
         summaries: list[dict[str, Any]] = []
@@ -545,7 +556,9 @@ class SessionStore:
         candidate.relative_to((self.artifact_root / session_id).resolve())
         return candidate
 
-    def bind_file(self, session_id: str, polarity: str, kind: str, path_text: str) -> dict[str, Any]:
+    def bind_file(
+        self, session_id: str, polarity: str, kind: str, path_text: str
+    ) -> dict[str, Any]:
         path = Path(path_text).resolve(strict=True)
         stat = path.stat()
         fingerprint, mode = fingerprint_file(path)
@@ -600,9 +613,14 @@ class SessionStore:
                  display_ja, scope, confirmed, created_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)""",
                 (
-                    session_id, int(mapping["position"]), str(mapping["original_token"]),
-                    str(mapping["factor"]), str(mapping["canonical_value"]),
-                    str(mapping["display_ja"]), scope, utc_now(),
+                    session_id,
+                    int(mapping["position"]),
+                    str(mapping["original_token"]),
+                    str(mapping["factor"]),
+                    str(mapping["canonical_value"]),
+                    str(mapping["display_ja"]),
+                    scope,
+                    utc_now(),
                 ),
             )
 
@@ -616,15 +634,22 @@ class SessionStore:
 
     def list_ontology_candidates(self, session_id: str) -> list[dict[str, Any]]:
         return [
-            item for item in self.list_mappings(session_id)
-            if item["scope"] == "ontology_candidate"
+            item for item in self.list_mappings(session_id) if item["scope"] == "ontology_candidate"
         ]
 
-    def record_approval(self, session_id: str, action: str, arguments: dict[str, Any], approved: bool) -> None:
+    def record_approval(
+        self, session_id: str, action: str, arguments: dict[str, Any], approved: bool
+    ) -> None:
         with self._lock, self._connection() as connection:
             connection.execute(
                 "INSERT INTO approvals(session_id, action, arguments_json, approved, created_at) VALUES (?, ?, ?, ?, ?)",
-                (session_id, action, json.dumps(arguments, ensure_ascii=False), int(approved), utc_now()),
+                (
+                    session_id,
+                    action,
+                    json.dumps(arguments, ensure_ascii=False),
+                    int(approved),
+                    utc_now(),
+                ),
             )
 
 

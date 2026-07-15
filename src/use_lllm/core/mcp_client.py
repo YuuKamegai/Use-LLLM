@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-import asyncio
 from typing import Any, AsyncIterator, Protocol
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
-
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -83,9 +82,7 @@ class MCPToolResult:
     @property
     def text(self) -> str:
         return "\n".join(
-            str(block.get("text", ""))
-            for block in self.content
-            if block.get("type") == "text"
+            str(block.get("text", "")) for block in self.content if block.get("type") == "text"
         )
 
 
@@ -128,9 +125,7 @@ async def list_all_tools(session: ToolListingSession) -> tuple[ToolDescription, 
         if cursor is None:
             break
         if cursor in seen_cursors:
-            raise MCPConnectionError(
-                f"tools/list が同じカーソルを繰り返しました: {cursor}"
-            )
+            raise MCPConnectionError(f"tools/list が同じカーソルを繰り返しました: {cursor}")
         seen_cursors.add(cursor)
     return tuple(tools)
 
@@ -156,9 +151,7 @@ class MCPClient:
         except MCPConnectionError:
             raise
         except Exception as exc:
-            raise MCPConnectionError(
-                "ms-data-parser MCPとのstdio通信に失敗しました"
-            ) from exc
+            raise MCPConnectionError("ms-data-parser MCPとのstdio通信に失敗しました") from exc
 
     async def inspect_server(self) -> MCPServerSnapshot:
         """Initialize the server and dynamically retrieve its complete tool set."""
@@ -169,9 +162,7 @@ class MCPClient:
                     initialized = await session.initialize()
                     tools = await list_all_tools(session)
         except TimeoutError as exc:
-            raise MCPConnectionError(
-                "ms-data-parser MCPの初期化がタイムアウトしました"
-            ) from exc
+            raise MCPConnectionError("ms-data-parser MCPの初期化がタイムアウトしました") from exc
 
         return MCPServerSnapshot(
             server_name=initialized.serverInfo.name,
@@ -197,18 +188,14 @@ class MCPClient:
                     await session.initialize()
                     advertised = {tool.name for tool in await list_all_tools(session)}
                     if tool_name not in advertised:
-                        raise MCPConnectionError(
-                            f"MCPがツールを公開していません: {tool_name}"
-                        )
+                        raise MCPConnectionError(f"MCPがツールを公開していません: {tool_name}")
                     result = await session.call_tool(tool_name, arguments or {})
         except TimeoutError as exc:
             raise MCPConnectionError(
                 f"MCPツール {tool_name} の呼び出しがタイムアウトしました"
             ) from exc
 
-        content = tuple(
-            block.model_dump(mode="json", by_alias=True) for block in result.content
-        )
+        content = tuple(block.model_dump(mode="json", by_alias=True) for block in result.content)
         return MCPToolResult(
             tool_name=tool_name,
             is_error=result.isError,
@@ -221,9 +208,7 @@ class MCPClient:
         return MCPToolResult(
             tool_name=tool_name,
             is_error=bool(result.isError),
-            content=tuple(
-                block.model_dump(mode="json", by_alias=True) for block in result.content
-            ),
+            content=tuple(block.model_dump(mode="json", by_alias=True) for block in result.content),
             structured_content=result.structuredContent,
         )
 

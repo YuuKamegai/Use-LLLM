@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from types import SimpleNamespace
 import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 
 from use_lllm.core.context_memory import ContextMemoryManager, parse_summary_json
 from use_lllm.core.sessions import SessionStore
@@ -34,9 +34,7 @@ class FakeSummarizer:
 
 class ContextMemoryTests(unittest.IsolatedAsyncioTestCase):
     def test_markdown_fenced_summary_is_normalized(self) -> None:
-        parsed = parse_summary_json(
-            '```json\n{"summary":"ARFを読み込み、PCAを続行する。"}\n```'
-        )
+        parsed = parse_summary_json('```json\n{"summary":"ARFを読み込み、PCAを続行する。"}\n```')
         self.assertEqual(parsed["objective"], "ARFを読み込み、PCAを続行する。")
         self.assertEqual(parsed["facts"], ["ARFを読み込み、PCAを続行する。"])
 
@@ -45,12 +43,8 @@ class ContextMemoryTests(unittest.IsolatedAsyncioTestCase):
             store = SessionStore(Path(raw) / "state")
             session = store.create_session("chat", surface="general")
             for index in range(6):
-                store.add_message(
-                    session["id"], "user", f"user-{index}:" + "あ" * 280
-                )
-                store.add_message(
-                    session["id"], "assistant", f"assistant-{index}:" + "い" * 280
-                )
+                store.add_message(session["id"], "user", f"user-{index}:" + "あ" * 280)
+                store.add_message(session["id"], "assistant", f"assistant-{index}:" + "い" * 280)
             ollama = FakeSummarizer()
             memory = ContextMemoryManager(
                 ollama,
@@ -99,9 +93,7 @@ class ContextMemoryTests(unittest.IsolatedAsyncioTestCase):
 
             assembled = await memory.assemble(session["id"], "system", [])
 
-            self.assertEqual(
-                store.list_messages(session["id"])[0]["content"], raw_result
-            )
+            self.assertEqual(store.list_messages(session["id"])[0]["content"], raw_result)
             encoded = json.dumps(assembled.messages, ensure_ascii=False)
             self.assertIn("MCPツール実行台帳", encoded)
             self.assertIn("tool result compacted", encoded)

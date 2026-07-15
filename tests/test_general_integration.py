@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import tempfile
+import unittest
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-import tempfile
-import unittest
 
 from use_lllm.core.endpoints import EndpointRegistry
 from use_lllm.core.mcp_registry import MCPRegistry
@@ -55,9 +55,7 @@ class FakeSession:
         )
 
     async def call_tool(self, name, arguments, *, session_id=None):
-        return SimpleNamespace(
-            isError=False, content=[FakeBlock()], structuredContent=None
-        )
+        return SimpleNamespace(isError=False, content=[FakeBlock()], structuredContent=None)
 
 
 class FakeOllama:
@@ -67,9 +65,7 @@ class FakeOllama:
                 {
                     "role": "assistant",
                     "content": "",
-                    "tool_calls": [
-                        {"function": {"name": "other::peek", "arguments": {}}}
-                    ],
+                    "tool_calls": [{"function": {"name": "other::peek", "arguments": {}}}],
                 },
                 "fake",
                 None,
@@ -109,24 +105,20 @@ class GeneralFoundationIntegrationTests(unittest.IsolatedAsyncioTestCase):
             path = root / "settings.json"
             save_settings(path, settings)
             loaded = load_settings(path)
-            endpoint = EndpointRegistry(
-                list(loaded.endpoints), loaded.selected_endpoint
-            ).selected()
+            endpoint = EndpointRegistry(list(loaded.endpoints), loaded.selected_endpoint).selected()
             endpoint.to_ollama_config().validate()
 
             @asynccontextmanager
             async def session_factory(_spec):
                 yield FakeSession()
 
-            registry = MCPRegistry(
-                loaded.mcp_servers, session_factory=session_factory
-            )
+            registry = MCPRegistry(loaded.mcp_servers, session_factory=session_factory)
             await registry.connect("other")
             store = SessionStore(root / "state")
             session = store.create_session("integration", surface="general")
-            result = await GeneralAgentLoop(
-                FakeOllama(), store, registry
-            ).chat(session["id"], "確認してください")
+            result = await GeneralAgentLoop(FakeOllama(), store, registry).chat(
+                session["id"], "確認してください"
+            )
 
             self.assertEqual(result["status"], "complete")
             self.assertEqual(registry.tool_names(), ["other::peek"])
@@ -136,9 +128,7 @@ class GeneralFoundationIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 [item["role"] for item in restored["messages"]],
                 ["user", "assistant", "tool", "assistant"],
             )
-            self.assertEqual(
-                restored["messages"][-1]["content"], "観測結果を確認しました。"
-            )
+            self.assertEqual(restored["messages"][-1]["content"], "観測結果を確認しました。")
 
 
 if __name__ == "__main__":

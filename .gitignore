@@ -3,6 +3,7 @@ __pycache__/
 *.egg-info/
 .venv/
 .pytest_cache/
+.ruff_cache/
 launcher/**/bin/
 launcher/**/obj/
 launcher/**/publish/

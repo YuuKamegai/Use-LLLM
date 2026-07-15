@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
 import math
 import os
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from jsonschema import Draft202012Validator
 
 from use_lllm.core.sessions import SessionStore, compact_tool_result
-
 
 SUMMARY_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -140,9 +139,7 @@ class ContextMemoryManager:
     def _tool_memory(self, session_id: str) -> dict[str, Any] | None:
         completed = [
             item
-            for item in self.sessions.list_tool_invocations(
-                session_id, include_replays=False
-            )
+            for item in self.sessions.list_tool_invocations(session_id, include_replays=False)
             if item["status"] == "complete" and not item.get("is_error")
         ]
         if not completed:
@@ -186,8 +183,7 @@ class ContextMemoryManager:
             '{"objective":"","facts":[],"decisions":[],"constraints":[],'
             '"open_questions":[],"dataset_refs":[]}。'
             "各配列の要素は文字列にしてください。MCP実行の成否や解析状態を推測で補完せず、"
-            "観測された内容だけを書いてください。\n\n"
-            + source_json
+            "観測された内容だけを書いてください。\n\n" + source_json
         )
         try:
             response = await self.ollama.chat(
@@ -255,9 +251,7 @@ class ContextMemoryManager:
         summary_created = False
 
         def render(summary: dict[str, Any] | None) -> list[dict[str, Any]]:
-            result: list[dict[str, Any]] = [
-                {"role": "system", "content": system_content}
-            ]
+            result: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
             if summary:
                 result.append(
                     {
@@ -282,9 +276,7 @@ class ContextMemoryManager:
         budget = max(1024, int(self.context_window * self.input_ratio) - estimate_tokens(tools))
         while estimate_tokens(messages) > budget:
             boundary = self._recent_boundary(raw)
-            candidates = [
-                item for item in raw if boundary and int(item["id"]) < boundary
-            ]
+            candidates = [item for item in raw if boundary and int(item["id"]) < boundary]
             if not candidates:
                 break
             chunk: list[dict[str, Any]] = []

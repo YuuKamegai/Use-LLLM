@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import unittest
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from types import SimpleNamespace
-import asyncio
-import unittest
 
 from use_lllm.core.mcp_client import MCPConnectionError
 from use_lllm.core.mcp_registry import MCPRegistry
@@ -92,9 +92,7 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         self.factory = factory
 
     async def test_connect_namespaces_tools_and_exposes_ollama_schema(self) -> None:
-        registry = MCPRegistry(
-            [MCPServerSpec("other", "python")], session_factory=self.factory
-        )
+        registry = MCPRegistry([MCPServerSpec("other", "python")], session_factory=self.factory)
         status = await registry.connect("other")
 
         self.assertEqual(status["status"], "connected")
@@ -108,11 +106,7 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_read_only_auto_validates_and_calls(self) -> None:
         registry = MCPRegistry(
-            [
-                MCPServerSpec(
-                    "ms-data-parser", "python", read_only_auto=True
-                )
-            ],
+            [MCPServerSpec("ms-data-parser", "python", read_only_auto=True)],
             session_factory=self.factory,
         )
         await registry.connect("ms-data-parser")
@@ -167,19 +161,13 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         )
         await registry.connect("ms-data-parser")
         await asyncio.create_task(
-            registry.call_tool(
-                "ms-data-parser::arf_parser", {}, session_id="session-a"
-            )
+            registry.call_tool("ms-data-parser::arf_parser", {}, session_id="session-a")
         )
         same_session = await asyncio.create_task(
-            registry.call_tool(
-                "ms-data-parser::arf_re_pca", {}, session_id="session-a"
-            )
+            registry.call_tool("ms-data-parser::arf_re_pca", {}, session_id="session-a")
         )
         other_session = await asyncio.create_task(
-            registry.call_tool(
-                "ms-data-parser::arf_re_pca", {}, session_id="session-b"
-            )
+            registry.call_tool("ms-data-parser::arf_re_pca", {}, session_id="session-b")
         )
 
         self.assertEqual(same_session.text, "pca")
@@ -191,9 +179,7 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         await registry.close_all()
 
     async def test_unknown_requires_approval_then_calls(self) -> None:
-        registry = MCPRegistry(
-            [MCPServerSpec("other", "python")], session_factory=self.factory
-        )
+        registry = MCPRegistry([MCPServerSpec("other", "python")], session_factory=self.factory)
         await registry.connect("other")
 
         with self.assertRaises(ToolPolicyError):
@@ -202,9 +188,7 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.text, "called:danger")
 
     async def test_annotated_read_only_requires_server_opt_in(self) -> None:
-        registry = MCPRegistry(
-            [MCPServerSpec("other", "python")], session_factory=self.factory
-        )
+        registry = MCPRegistry([MCPServerSpec("other", "python")], session_factory=self.factory)
         await registry.connect("other")
         with self.assertRaises(ToolPolicyError):
             await registry.call_tool("other::peek", {})
@@ -213,11 +197,7 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_arguments_and_disconnected_calls_are_rejected(self) -> None:
         registry = MCPRegistry(
-            [
-                MCPServerSpec(
-                    "ms-data-parser", "python", read_only_auto=True
-                )
-            ],
+            [MCPServerSpec("ms-data-parser", "python", read_only_auto=True)],
             session_factory=self.factory,
         )
         with self.assertRaisesRegex(MCPConnectionError, "接続"):

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
-
 
 DEFAULT_MCP_COMMAND = Path(r"C:\Python314\python.exe")
 DEFAULT_MCP_SERVER_SCRIPT = Path(r"C:\Users\yuu18\Lipidmix_with_LLM\server.py")
@@ -41,9 +40,7 @@ class MCPServerConfig:
             os.environ.get("USE_LLLM_MCP_COMMAND", str(DEFAULT_MCP_COMMAND))
         ).expanduser()
         server_script = Path(
-            os.environ.get(
-                "USE_LLLM_MCP_SERVER_SCRIPT", str(DEFAULT_MCP_SERVER_SCRIPT)
-            )
+            os.environ.get("USE_LLLM_MCP_SERVER_SCRIPT", str(DEFAULT_MCP_SERVER_SCRIPT))
         ).expanduser()
         timeout_text = os.environ.get("USE_LLLM_MCP_STARTUP_TIMEOUT", "30")
         try:
@@ -68,13 +65,9 @@ class MCPServerConfig:
         if self.startup_timeout_seconds <= 0:
             raise ConfigurationError("MCP起動タイムアウトは0より大きくしてください")
         if not self.command.is_file():
-            raise ConfigurationError(
-                f"MCP起動コマンドが見つかりません: {self.command}"
-            )
+            raise ConfigurationError(f"MCP起動コマンドが見つかりません: {self.command}")
         if not self.server_script.is_file():
-            raise ConfigurationError(
-                f"MCPサーバースクリプトが見つかりません: {self.server_script}"
-            )
+            raise ConfigurationError(f"MCPサーバースクリプトが見つかりません: {self.server_script}")
 
 
 @dataclass(frozen=True, slots=True)

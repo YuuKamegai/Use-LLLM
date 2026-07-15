@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from contextlib import closing
-from pathlib import Path
 import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
+from pathlib import Path
 
 from use_lllm.core.audit import AuditLogger
 from use_lllm.core.policy import ToolDecision, ToolSafety
@@ -22,9 +22,7 @@ class GeneralSessionTests(unittest.TestCase):
             self.assertEqual(lipid["surface"], "lipidomics")
             self.assertEqual(general["surface"], "general")
             self.assertEqual(general["state"]["phase"], "chat")
-            self.assertEqual(
-                [item["id"] for item in store.list_sessions()], [lipid["id"]]
-            )
+            self.assertEqual([item["id"] for item in store.list_sessions()], [lipid["id"]])
             self.assertEqual(
                 [item["id"] for item in store.list_sessions("general")],
                 [general["id"]],
@@ -50,9 +48,7 @@ class GeneralSessionTests(unittest.TestCase):
                 ["こんにちは", "確認します"],
             )
             self.assertEqual(
-                restored["messages"][1]["metadata"]["tool_calls"][0]["function"][
-                    "name"
-                ],
+                restored["messages"][1]["metadata"]["tool_calls"][0]["function"]["name"],
                 "srv::peek",
             )
 
@@ -95,9 +91,7 @@ class GeneralSessionTests(unittest.TestCase):
                 restored["tool_invocations"][0]["arguments"]["file_path"],
                 "C:/data/test.arf",
             )
-            self.assertLessEqual(
-                len(restored["tool_invocations"][0]["result_summary"]), 2050
-            )
+            self.assertLessEqual(len(restored["tool_invocations"][0]["result_summary"]), 2050)
             self.assertEqual(restored["memory_summary"]["summary"]["objective"], "目的")
 
     def test_legacy_database_is_migrated_to_lipidomics_surface(self) -> None:
@@ -149,9 +143,7 @@ class AuditLoggerTests(unittest.TestCase):
                 {"path": "C:/secret/data", "query": "private"},
                 decision,
             )
-            audit.record_tool_result(
-                session["id"], "srv::peek", is_error=False, content_blocks=2
-            )
+            audit.record_tool_result(session["id"], "srv::peek", is_error=False, content_blocks=2)
 
             events = store.list_events(session["id"])
             encoded = json.dumps(events, ensure_ascii=False)

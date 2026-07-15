@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from use_lllm.core.config import (
-    ConfigurationError,
     DEFAULT_MCP_COMMAND,
     DEFAULT_MCP_SERVER_SCRIPT,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_URL,
+    ConfigurationError,
 )
-from use_lllm.core.endpoints import Endpoint, TRUST_LOOPBACK
-
+from use_lllm.core.endpoints import TRUST_LOOPBACK, Endpoint
 
 MS_DATA_PARSER = "ms-data-parser"
 

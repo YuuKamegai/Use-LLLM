@@ -1,26 +1,23 @@
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from use_lllm.app import create_app as create_standalone_app
 from use_lllm.core.mcp_client import MCPToolResult
 from use_lllm.core.ollama import OllamaResponse
 from use_lllm.core.policy import ToolDecision, ToolSafety
 from use_lllm.core.sessions import SessionStore
 from use_lllm.general.api import create_general_app
-from use_lllm.app import create_app as create_standalone_app
 
 
 def assistant(content="", tool=None, arguments=None):
     message = {"role": "assistant", "content": content}
     if tool:
-        message["tool_calls"] = [
-            {"function": {"name": tool, "arguments": arguments or {}}}
-        ]
+        message["tool_calls"] = [{"function": {"name": tool, "arguments": arguments or {}}}]
     return OllamaResponse(message, "fake", None, None, None)
 
 

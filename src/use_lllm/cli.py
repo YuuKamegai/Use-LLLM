@@ -10,10 +10,10 @@ from typing import Sequence
 
 from use_lllm.core.config import ConfigurationError, MCPServerConfig, OllamaConfig
 from use_lllm.core.mcp_client import (
+    READ_ONLY_SMOKE_TOOLS,
     MCPClient,
     MCPConnectionError,
     MCPServerSnapshot,
-    READ_ONLY_SMOKE_TOOLS,
 )
 
 
@@ -42,7 +42,9 @@ def _build_parser() -> argparse.ArgumentParser:
     readonly.add_argument("--extension", help="list_data_filesで絞り込む拡張子")
     readonly.add_argument("--json", action="store_true", help="結果を機械可読JSONで表示する")
 
-    ollama = subparsers.add_parser("ollama-smoke", help="Ollamaのモデル存在とtool callingを確認する")
+    ollama = subparsers.add_parser(
+        "ollama-smoke", help="Ollamaのモデル存在とtool callingを確認する"
+    )
     ollama.add_argument("--model", help="検証するモデル名（既定は設定値）")
     ollama.add_argument("--json", action="store_true")
 

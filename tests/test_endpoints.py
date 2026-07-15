@@ -4,10 +4,10 @@ import unittest
 
 from use_lllm.core.config import ConfigurationError
 from use_lllm.core.endpoints import (
-    Endpoint,
-    EndpointRegistry,
     TRUST_LAN_ALLOWED,
     TRUST_LOOPBACK,
+    Endpoint,
+    EndpointRegistry,
 )
 
 
@@ -21,20 +21,27 @@ class EndpointTests(unittest.TestCase):
             endpoint.validate()
 
     def test_lan_allowed_endpoint_validates_non_loopback(self) -> None:
-        Endpoint(name="lab", base_url="http://10.242.145.97:11434", trust=TRUST_LAN_ALLOWED).validate()
+        Endpoint(
+            name="lab", base_url="http://10.242.145.97:11434", trust=TRUST_LAN_ALLOWED
+        ).validate()
 
     def test_invalid_trust_rejected(self) -> None:
         with self.assertRaisesRegex(ConfigurationError, "trust"):
             Endpoint(name="x", base_url="http://127.0.0.1:11434", trust="public").validate()
 
     def test_spoofed_loopback_host_rejected(self) -> None:
-        endpoint = Endpoint(name="spoof", base_url="http://127.0.0.1.evil.com:11434", trust=TRUST_LOOPBACK)
+        endpoint = Endpoint(
+            name="spoof", base_url="http://127.0.0.1.evil.com:11434", trust=TRUST_LOOPBACK
+        )
         with self.assertRaisesRegex(ConfigurationError, "loopback"):
             endpoint.validate()
 
     def test_to_ollama_config_carries_allow_lan_and_model(self) -> None:
         endpoint = Endpoint(
-            name="lab", base_url="http://10.242.145.97:11434/", trust=TRUST_LAN_ALLOWED, default_model="qwen3:14b"
+            name="lab",
+            base_url="http://10.242.145.97:11434/",
+            trust=TRUST_LAN_ALLOWED,
+            default_model="qwen3:14b",
         )
         config = endpoint.to_ollama_config()
         self.assertTrue(config.allow_lan)
@@ -47,8 +54,12 @@ class EndpointRegistryTests(unittest.TestCase):
     def _registry(self) -> EndpointRegistry:
         return EndpointRegistry(
             [
-                Endpoint(name="local", base_url="http://127.0.0.1:11434", default_model="qwen3:14b"),
-                Endpoint(name="lab", base_url="http://10.242.145.97:11434", trust=TRUST_LAN_ALLOWED),
+                Endpoint(
+                    name="local", base_url="http://127.0.0.1:11434", default_model="qwen3:14b"
+                ),
+                Endpoint(
+                    name="lab", base_url="http://10.242.145.97:11434", trust=TRUST_LAN_ALLOWED
+                ),
             ],
             selected="local",
         )
@@ -80,7 +91,9 @@ class EndpointRegistryTests(unittest.TestCase):
 
     def test_selected_must_exist(self) -> None:
         with self.assertRaisesRegex(ConfigurationError, "選択"):
-            EndpointRegistry([Endpoint(name="local", base_url="http://127.0.0.1:11434")], selected="nope")
+            EndpointRegistry(
+                [Endpoint(name="local", base_url="http://127.0.0.1:11434")], selected="nope"
+            )
 
 
 if __name__ == "__main__":

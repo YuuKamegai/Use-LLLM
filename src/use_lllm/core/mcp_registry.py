@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass
 import asyncio
 import re
 import secrets
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from mcp import ClientSession, StdioServerParameters
@@ -33,9 +33,7 @@ class RegistrySession(Protocol):
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any: ...
 
 
-SessionFactory = Callable[
-    [MCPServerSpec], AbstractAsyncContextManager[RegistrySession]
-]
+SessionFactory = Callable[[MCPServerSpec], AbstractAsyncContextManager[RegistrySession]]
 
 
 @asynccontextmanager
@@ -56,9 +54,7 @@ async def stdio_session(spec: MCPServerSpec) -> AsyncIterator[ClientSession]:
     except MCPConnectionError:
         raise
     except Exception as exc:
-        raise MCPConnectionError(
-            f"MCPサーバー {spec.name} とのstdio通信に失敗しました。"
-        ) from exc
+        raise MCPConnectionError(f"MCPサーバー {spec.name} とのstdio通信に失敗しました。") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,9 +169,7 @@ class MCPRegistry:
         self._errors.pop(name, None)
         return self.status(name)
 
-    async def _open_managed(
-        self, session_id: str, server_name: str
-    ) -> ManagedConnection:
+    async def _open_managed(self, session_id: str, server_name: str) -> ManagedConnection:
         key = (session_id, server_name)
         existing = self._managed.get(key)
         if existing is not None and not existing.task.done():
@@ -234,9 +228,7 @@ class MCPRegistry:
                     if request is None:
                         return
                     try:
-                        result = await session.call_tool(
-                            request.tool_name, request.arguments
-                        )
+                        result = await session.call_tool(request.tool_name, request.arguments)
                     except BaseException as exc:
                         failure = exc
                         if not request.future.done():
@@ -295,7 +287,9 @@ class MCPRegistry:
         snapshot = self._snapshots.get(name)
         return {
             "name": name,
-            "status": "connected" if snapshot is not None else "error"
+            "status": "connected"
+            if snapshot is not None
+            else "error"
             if name in self._errors
             else "disconnected",
             "read_only_auto": spec.read_only_auto,
@@ -319,9 +313,7 @@ class MCPRegistry:
     def tool_names(self) -> list[str]:
         return [tool.qualified_name for tool in self.tools()]
 
-    def ollama_tools(
-        self, query: str | None = None, *, limit: int = 12
-    ) -> list[dict[str, Any]]:
+    def ollama_tools(self, query: str | None = None, *, limit: int = 12) -> list[dict[str, Any]]:
         """現在の発話に近いtool候補だけをOllamaへ渡す。
 
         UIと監査では全件を維持する。明示名を最優先し、無一致時も先頭候補を
@@ -334,11 +326,7 @@ class MCPRegistry:
         if not query:
             return [tool.to_ollama_tool() for tool in tools[:limit]]
         folded = query.casefold()
-        query_tokens = {
-            token
-            for token in re.findall(r"[a-z0-9_\-.]+", folded)
-            if len(token) >= 2
-        }
+        query_tokens = {token for token in re.findall(r"[a-z0-9_\-.]+", folded) if len(token) >= 2}
 
         def score(item: RegisteredTool) -> int:
             qualified = item.qualified_name.casefold()
@@ -357,9 +345,7 @@ class MCPRegistry:
                     value += 2
             return value
 
-        ranked = sorted(
-            enumerate(tools), key=lambda pair: (-score(pair[1]), pair[0])
-        )
+        ranked = sorted(enumerate(tools), key=lambda pair: (-score(pair[1]), pair[0]))
         return [item.to_ollama_tool() for _index, item in ranked[:limit]]
 
     def get_tool(self, qualified_name: str) -> RegisteredTool:
@@ -371,9 +357,7 @@ class MCPRegistry:
             ) from exc
         snapshot = self._snapshots.get(server_name)
         if snapshot is None:
-            raise MCPConnectionError(
-                f"MCPサーバーが接続されていません: {server_name}"
-            )
+            raise MCPConnectionError(f"MCPサーバーが接続されていません: {server_name}")
         for tool in snapshot.tools:
             if tool.name == tool_name:
                 return RegisteredTool(server_name, tool)
@@ -407,9 +391,7 @@ class MCPRegistry:
         session_id: str | None = None,
     ) -> MCPToolResult:
         tool = self.get_tool(qualified_name)
-        decision = self.decide(
-            qualified_name, approved=approved, network_mode=network_mode
-        )
+        decision = self.decide(qualified_name, approved=approved, network_mode=network_mode)
         if not decision.allowed:
             raise ToolPolicyError(decision.reason)
         values = arguments or {}
@@ -423,12 +405,8 @@ class MCPRegistry:
                         result = await session.call_tool(tool.description.name, values)
                 else:
                     managed = await self._open_managed(session_id, tool.server_name)
-                    future: asyncio.Future[Any] = (
-                        asyncio.get_running_loop().create_future()
-                    )
-                    await managed.queue.put(
-                        ManagedRequest(tool.description.name, values, future)
-                    )
+                    future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+                    await managed.queue.put(ManagedRequest(tool.description.name, values, future))
                     result = await future
             serialized = MCPClient._serialize_result(tool.description.name, result)
             return MCPToolResult(

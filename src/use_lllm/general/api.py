@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-import asyncio
-import json
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -28,7 +28,6 @@ from use_lllm.core.settings_store import (
     save_settings,
 )
 from use_lllm.general.agent_loop import GeneralAgentLoop
-
 
 STATIC_ROOT = Path(__file__).with_name("static")
 VENDOR_ROOT = STATIC_ROOT.parent.parent / "static" / "vendor"
@@ -101,9 +100,7 @@ class GeneralRuntime:
 
     @staticmethod
     def _validate(settings: Settings) -> EndpointRegistry:
-        endpoints = EndpointRegistry(
-            list(settings.endpoints), settings.selected_endpoint
-        )
+        endpoints = EndpointRegistry(list(settings.endpoints), settings.selected_endpoint)
         names = [spec.name for spec in settings.mcp_servers]
         if len(names) != len(set(names)):
             raise ConfigurationError("MCPサーバー名が重複しています。")
@@ -175,9 +172,7 @@ def _endpoint(body: EndpointBody) -> Endpoint:
     )
 
 
-def _server(
-    body: MCPServerBody, existing: MCPServerSpec | None = None
-) -> MCPServerSpec:
+def _server(body: MCPServerBody, existing: MCPServerSpec | None = None) -> MCPServerSpec:
     env = (
         tuple(sorted(body.env.items()))
         if body.env is not None
@@ -232,9 +227,7 @@ def create_general_app(
             if close_all is not None:
                 await close_all()
 
-    app = FastAPI(
-        title="Use-LLLM General", version="0.1.0", lifespan=lifespan
-    )
+    app = FastAPI(title="Use-LLLM General", version="0.1.0", lifespan=lifespan)
     app.state.runtime = runtime
     app.state.sessions = sessions
 
@@ -309,7 +302,11 @@ def create_general_app(
             if body.name != name and body.name in {item.name for item in current}:
                 raise ValueError(f"エンドポイント名が重複しています: {body.name}")
             updated = tuple(_endpoint(body) if item.name == name else item for item in current)
-            selected = body.name if runtime.settings.selected_endpoint == name else runtime.settings.selected_endpoint
+            selected = (
+                body.name
+                if runtime.settings.selected_endpoint == name
+                else runtime.settings.selected_endpoint
+            )
             await runtime.apply(Settings(updated, selected, runtime.settings.mcp_servers))
             return runtime.public_settings()
         except Exception as exc:
@@ -389,9 +386,7 @@ def create_general_app(
     @app.delete("/api/mcp-servers/{name}")
     async def delete_server(name: str) -> dict[str, Any]:
         try:
-            updated = tuple(
-                item for item in runtime.settings.mcp_servers if item.name != name
-            )
+            updated = tuple(item for item in runtime.settings.mcp_servers if item.name != name)
             if len(updated) == len(runtime.settings.mcp_servers):
                 raise KeyError(name)
             await runtime.apply(
@@ -472,9 +467,7 @@ def create_general_app(
                 async for item in runtime.agent.chat_stream(session_id, body.message):
                     yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
             except asyncio.CancelledError:
-                sessions.append_event(
-                    session_id, "general_chat_cancelled", {}, status="cancelled"
-                )
+                sessions.append_event(session_id, "general_chat_cancelled", {}, status="cancelled")
                 raise
             except Exception as exc:
                 yield f"data: {json.dumps({'type': 'error', 'error': str(exc)}, ensure_ascii=False)}\n\n"

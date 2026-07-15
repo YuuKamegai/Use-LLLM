@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from use_lllm.core.mcp_client import MCPToolResult
 from use_lllm.core.ollama import OllamaResponse
@@ -14,9 +14,7 @@ from use_lllm.general.agent_loop import GeneralAgentLoop
 def response(content: str = "", tool: str | None = None, arguments=None):
     message = {"role": "assistant", "content": content}
     if tool:
-        message["tool_calls"] = [
-            {"function": {"name": tool, "arguments": arguments or {}}}
-        ]
+        message["tool_calls"] = [{"function": {"name": tool, "arguments": arguments or {}}}]
     return OllamaResponse(message, "fake", None, None, None)
 
 
@@ -103,12 +101,8 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["role"] for item in messages], ["user", "assistant"])
 
     async def test_read_only_auto_tool_runs_then_model_answers(self) -> None:
-        ollama = FakeOllama(
-            [response(tool="srv::peek", arguments={"x": 1}), response("完了")]
-        )
-        registry = FakeRegistry(
-            {"srv::peek": (ToolSafety.READ_ONLY, True)}
-        )
+        ollama = FakeOllama([response(tool="srv::peek", arguments={"x": 1}), response("完了")])
+        registry = FakeRegistry({"srv::peek": (ToolSafety.READ_ONLY, True)})
         loop = GeneralAgentLoop(ollama, self.store, registry)
 
         result = await loop.chat(self.session["id"], "確認して")
@@ -123,9 +117,7 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         ollama = FakeOllama(
             [response(tool="srv::danger", arguments={"path": "C:/data"}), response("承認後完了")]
         )
-        registry = FakeRegistry(
-            {"srv::danger": (ToolSafety.UNKNOWN, False)}
-        )
+        registry = FakeRegistry({"srv::danger": (ToolSafety.UNKNOWN, False)})
         loop = GeneralAgentLoop(ollama, self.store, registry)
 
         pending = await loop.chat(self.session["id"], "実行して")
@@ -143,12 +135,8 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_rejected_tool_is_not_called_and_model_can_answer(self) -> None:
-        ollama = FakeOllama(
-            [response(tool="srv::danger"), response("拒否を了解しました")]
-        )
-        registry = FakeRegistry(
-            {"srv::danger": (ToolSafety.UNKNOWN, False)}
-        )
+        ollama = FakeOllama([response(tool="srv::danger"), response("拒否を了解しました")])
+        registry = FakeRegistry({"srv::danger": (ToolSafety.UNKNOWN, False)})
         loop = GeneralAgentLoop(ollama, self.store, registry)
         pending = await loop.chat(self.session["id"], "実行して")
 
@@ -159,12 +147,8 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(registry.calls, [])
 
     async def test_step_limit_stops_repeated_tool_calls(self) -> None:
-        ollama = FakeOllama(
-            [response(tool="srv::peek"), response(tool="srv::peek")]
-        )
-        registry = FakeRegistry(
-            {"srv::peek": (ToolSafety.READ_ONLY, True)}
-        )
+        ollama = FakeOllama([response(tool="srv::peek"), response(tool="srv::peek")])
+        registry = FakeRegistry({"srv::peek": (ToolSafety.READ_ONLY, True)})
         loop = GeneralAgentLoop(ollama, self.store, registry, max_steps=2)
 
         result = await loop.chat(self.session["id"], "繰り返して")

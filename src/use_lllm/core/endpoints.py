@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 from use_lllm.core.config import ConfigurationError, OllamaConfig, is_loopback_url
 
-
 TRUST_LOOPBACK = "loopback"
 TRUST_LAN_ALLOWED = "lan_allowed"
 _TRUSTS = frozenset({TRUST_LOOPBACK, TRUST_LAN_ALLOWED})
@@ -27,9 +26,7 @@ class Endpoint:
                 f"エンドポイント {self.name} のURLはhttp(s)を指定してください。"
             )
         if self.trust not in _TRUSTS:
-            raise ConfigurationError(
-                f"エンドポイント {self.name} のtrustが不正です: {self.trust}"
-            )
+            raise ConfigurationError(f"エンドポイント {self.name} のtrustが不正です: {self.trust}")
         if self.trust == TRUST_LOOPBACK and not is_loopback_url(self.base_url):
             raise ConfigurationError(
                 f"エンドポイント {self.name} はloopback指定ですが非loopback URLです。"

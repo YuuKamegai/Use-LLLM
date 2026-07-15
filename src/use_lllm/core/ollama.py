@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
 import httpx
@@ -46,7 +46,9 @@ class OllamaClient:
                 response.raise_for_status()
                 data = response.json()
         except httpx.ConnectError as exc:
-            raise OllamaError("Ollamaへ接続できません。Ollamaが起動しているか確認してください。") from exc
+            raise OllamaError(
+                "Ollamaへ接続できません。Ollamaが起動しているか確認してください。"
+            ) from exc
         except httpx.TimeoutException as exc:
             raise OllamaError("Ollamaの応答がタイムアウトしました。") from exc
         except (httpx.HTTPStatusError, json.JSONDecodeError) as exc:
@@ -159,7 +161,9 @@ class OllamaClient:
         except (httpx.HTTPStatusError, json.JSONDecodeError) as exc:
             raise OllamaError(f"OllamaストリーミングAPIがエラーを返しました: {exc}") from exc
 
-    async def interpret_result(self, objective: str, result_text: str, context: str = "") -> dict[str, Any]:
+    async def interpret_result(
+        self, objective: str, result_text: str, context: str = ""
+    ) -> dict[str, Any]:
         schema = {
             "type": "object",
             "properties": {
@@ -189,7 +193,10 @@ class OllamaClient:
         response = await self.chat(
             [
                 {"role": "system", "content": system},
-                {"role": "user", "content": f"解析目的:\n{objective or '未設定'}\n\n前提:\n{context}\n\nツール結果:\n{result_text[:24000]}"},
+                {
+                    "role": "user",
+                    "content": f"解析目的:\n{objective or '未設定'}\n\n前提:\n{context}\n\nツール結果:\n{result_text[:24000]}",
+                },
             ],
             format_schema=schema,
             temperature=0.1,
@@ -213,14 +220,19 @@ class OllamaClient:
                 "description": "指定フォルダのデータファイル一覧を取得する",
                 "parameters": {
                     "type": "object",
-                    "properties": {"directory": {"type": "string"}, "extension": {"type": "string"}},
+                    "properties": {
+                        "directory": {"type": "string"},
+                        "extension": {"type": "string"},
+                    },
                     "required": ["directory", "extension"],
                 },
             },
         }
         response = await self.chat(
             [{"role": "user", "content": r"C:\data\NEG の .arf2 一覧を取得してください。"}],
-            tools=[tool], model=model, temperature=0,
+            tools=[tool],
+            model=model,
+            temperature=0,
         )
         return {
             "model": response.model,

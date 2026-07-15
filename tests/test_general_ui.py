@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from use_lllm.core.sessions import SessionStore
 from use_lllm.general.api import create_general_app
-
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "src" / "use_lllm" / "general" / "static"
@@ -115,7 +114,9 @@ class GeneralUiContractTests(unittest.TestCase):
 
     def test_windows_launcher_targets_general_surface(self) -> None:
         launcher = (ROOT / "Start-WebUI.ps1").read_text(encoding="utf-8")
-        exe_source = (ROOT / "launcher" / "Use-LLLM-WebUI" / "Program.cs").read_text(encoding="utf-8")
+        exe_source = (ROOT / "launcher" / "Use-LLLM-WebUI" / "Program.cs").read_text(
+            encoding="utf-8"
+        )
         build_script = (ROOT / "Build-WebUI-Launcher.ps1").read_text(encoding="utf-8")
         self.assertIn('$SourceRoot = Join-Path $ProjectRoot "src"', launcher)
         self.assertIn("$env:PYTHONPATH", launcher)

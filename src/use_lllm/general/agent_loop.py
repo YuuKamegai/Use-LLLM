@@ -18,7 +18,6 @@ from use_lllm.core.mcp_state_policy import (
 from use_lllm.core.ollama import OllamaClient
 from use_lllm.core.sessions import SessionStore
 
-
 SYSTEM_PROMPT = """あなたはローカルファーストの汎用アシスタントです。
 MCPツール名は server::tool 形式です。ユーザーがtool部分だけを指定した場合も、末尾が一致する名前空間付きツールを選んでください。
 利用可能なMCPツールが必要な場合だけ呼び出し、1回の応答では1ツールずつ使ってください。
@@ -84,10 +83,12 @@ class GeneralAgentLoop:
             for item in tools
             if item.get("function", {}).get("name")
         ]
-        catalog = "\n現在利用可能なツール: " + ", ".join(tool_names) if tool_names else "\n現在接続中のMCPツールはありません。"
-        assembled = await self.memory.assemble(
-            session_id, SYSTEM_PROMPT + catalog, tools
+        catalog = (
+            "\n現在利用可能なツール: " + ", ".join(tool_names)
+            if tool_names
+            else "\n現在接続中のMCPツールはありません。"
         )
+        assembled = await self.memory.assemble(session_id, SYSTEM_PROMPT + catalog, tools)
         return assembled.messages
 
     @staticmethod
@@ -118,9 +119,7 @@ class GeneralAgentLoop:
     def _server_name(qualified_name: str) -> str:
         return qualified_name.split("::", 1)[0]
 
-    async def _ensure_registry_session(
-        self, session_id: str, server_name: str
-    ) -> int:
+    async def _ensure_registry_session(self, session_id: str, server_name: str) -> int:
         ensure = getattr(self.registry, "ensure_session", None)
         if ensure is None:
             return 0
@@ -173,9 +172,7 @@ class GeneralAgentLoop:
                 network_mode=network_mode,
             )
             content = self._tool_content(result)
-            if not result.is_error and indicates_missing_state(
-                qualified_name, content
-            ):
+            if not result.is_error and indicates_missing_state(qualified_name, content):
                 result = MCPToolResult(
                     result.tool_name,
                     True,
@@ -218,9 +215,7 @@ class GeneralAgentLoop:
             return True
         if not rule_for(target_tool).requires:
             return True
-        invocations = self.sessions.list_tool_invocations(
-            session_id, include_replays=False
-        )
+        invocations = self.sessions.list_tool_invocations(session_id, include_replays=False)
         try:
             plan = build_replay_plan(target_tool, invocations)
         except StateRestoreBlocked as exc:
@@ -235,9 +230,7 @@ class GeneralAgentLoop:
         for invocation in plan:
             replay_tool = str(invocation["tool_name"])
             if not rule_for(replay_tool).replay_safe:
-                raise StateRestoreBlocked(
-                    f"安全に再実行できないMCPツールです: {replay_tool}"
-                )
+                raise StateRestoreBlocked(f"安全に再実行できないMCPツールです: {replay_tool}")
             await self._call_and_record(
                 session_id,
                 replay_tool,
@@ -249,9 +242,7 @@ class GeneralAgentLoop:
             )
             replayed.append(int(invocation["id"]))
         generations[server_name] = generation
-        self.sessions.update_session(
-            session_id, state_patch={"mcp_generations": generations}
-        )
+        self.sessions.update_session(session_id, state_patch={"mcp_generations": generations})
         if replayed:
             self.sessions.append_event(
                 session_id,
@@ -264,18 +255,14 @@ class GeneralAgentLoop:
             )
         return True
 
-    def _mark_mcp_state_live(
-        self, session_id: str, qualified_name: str, generation: int
-    ) -> None:
+    def _mark_mcp_state_live(self, session_id: str, qualified_name: str, generation: int) -> None:
         if generation == 0:
             return
         server_name = self._server_name(qualified_name)
         session = self._general_session(session_id)
         generations = dict(session["state"].get("mcp_generations", {}))
         generations[server_name] = generation
-        self.sessions.update_session(
-            session_id, state_patch={"mcp_generations": generations}
-        )
+        self.sessions.update_session(session_id, state_patch={"mcp_generations": generations})
 
     async def chat(self, session_id: str, message: str) -> dict[str, Any]:
         session = self._general_session(session_id)
@@ -288,18 +275,14 @@ class GeneralAgentLoop:
         self.sessions.update_session(session_id, status="running")
         return await self._drive(session_id)
 
-    async def chat_stream(
-        self, session_id: str, message: str
-    ) -> AsyncIterator[dict[str, Any]]:
+    async def chat_stream(self, session_id: str, message: str) -> AsyncIterator[dict[str, Any]]:
         yield {"type": "status", "status": "thinking"}
         result = await self.chat(session_id, message)
         yield {"type": result["status"], **result}
 
     async def _drive(self, session_id: str) -> dict[str, Any]:
         network_mode = str(
-            self._general_session(session_id)["state"].get(
-                "network_mode", "offline"
-            )
+            self._general_session(session_id)["state"].get("network_mode", "offline")
         )
         user_messages = [
             item["content"]
@@ -338,9 +321,7 @@ class GeneralAgentLoop:
                     "tool_calls": [call],
                 },
             )
-            decision = self.registry.decide(
-                qualified_name, network_mode=network_mode
-            )
+            decision = self.registry.decide(qualified_name, network_mode=network_mode)
             decision_event = self.audit.record_tool_decision(
                 session_id, qualified_name, arguments, decision
             )
@@ -390,15 +371,11 @@ class GeneralAgentLoop:
                 has_structured_content=result.structured_content is not None,
                 parent_event_id=decision_event,
             )
-            if not result.is_error and (
-                state_ready or not rule_for(qualified_name).requires
-            ):
+            if not result.is_error and (state_ready or not rule_for(qualified_name).requires):
                 generation = await self._ensure_registry_session(
                     session_id, self._server_name(qualified_name)
                 )
-                self._mark_mcp_state_live(
-                    session_id, qualified_name, generation
-                )
+                self._mark_mcp_state_live(session_id, qualified_name, generation)
 
         self.sessions.append_event(
             session_id,
@@ -434,15 +411,9 @@ class GeneralAgentLoop:
         )
 
         if approved:
-            decision = self.registry.decide(
-                name, approved=True, network_mode=network_mode
-            )
-            decision_event = self.audit.record_tool_decision(
-                session_id, name, arguments, decision
-            )
-            state_ready = await self._restore_mcp_state(
-                session_id, name, network_mode=network_mode
-            )
+            decision = self.registry.decide(name, approved=True, network_mode=network_mode)
+            decision_event = self.audit.record_tool_decision(session_id, name, arguments, decision)
+            state_ready = await self._restore_mcp_state(session_id, name, network_mode=network_mode)
             result = await self._call_and_record(
                 session_id,
                 name,
@@ -473,9 +444,7 @@ class GeneralAgentLoop:
             )
             status = "cancelled"
 
-        self.sessions.complete_event(
-            event_id, status, {**payload, "approved": approved}
-        )
+        self.sessions.complete_event(event_id, status, {**payload, "approved": approved})
         self.sessions.update_session(
             session_id,
             status="running",
@@ -487,7 +456,5 @@ class GeneralAgentLoop:
         self, session_id: str, event_id: int, *, approved: bool
     ) -> AsyncIterator[dict[str, Any]]:
         yield {"type": "status", "status": "executing"}
-        result = await self.resolve_approval(
-            session_id, event_id, approved=approved
-        )
+        result = await self.resolve_approval(session_id, event_id, approved=approved)
         yield {"type": result["status"], **result}
