@@ -51,6 +51,25 @@ class MCPStatePolicyTests(unittest.TestCase):
     def test_unknown_tool_needs_no_automatic_replay(self) -> None:
         self.assertEqual(build_replay_plan("other::unknown", []), [])
 
+    def test_save_eic_replays_latest_plot_payload(self) -> None:
+        history = [invocation(
+            4,
+            "ms-data-parser::eicaef_plot_chromatograms",
+            arguments={"spot_id": 12, "file_ids": [1, 2]},
+        )]
+
+        plan = build_replay_plan("ms-data-parser::save_eic_figure", history)
+
+        self.assertEqual([item["id"] for item in plan], [4])
+
+    def test_missing_eic_plot_message_is_treated_as_state_error(self) -> None:
+        self.assertTrue(
+            indicates_missing_state(
+                "ms-data-parser::save_eic_figure",
+                "先に eicaef_plot_chromatograms を実行してください（EICプロット情報がありません）。",
+            )
+        )
+
     def test_short_prerequisite_message_is_treated_as_state_error(self) -> None:
         self.assertTrue(
             indicates_missing_state(

@@ -61,3 +61,11 @@ uv run pytest tests -v
 - 実行時データは `%LOCALAPPDATA%/Use-LLLM/`（sqlite・settings.json・sessions）
 - 起動スクリプトとEXEは、このリポジトリ直下の `src` と `Start-WebUI.ps1` を解決し、移行前の配置には依存しない。
 - 既定の `ms-data-parser` MCPだけは、移動対象外の `C:\Users\yuu18\Lipidmix_with_LLM\server.py` を意図的に使用する。`USE_LLLM_MCP_SERVER_SCRIPT` で上書きできる。
+
+## EICプロット
+
+`ms-data-parser::eicaef_plot_chromatograms` が返す
+`plot_schema="lipidmix.eic.v1"` の構造化プロット情報は、チャット内でPlotlyの
+インタラクティブな線グラフとして描画する。情報取得はread-onlyで、画像ファイルは
+生成しない。PNG保存はユーザーが明示した場合だけ
+`ms-data-parser::save_eic_figure` を呼び、ローカル書き込みとして承認を要求する。

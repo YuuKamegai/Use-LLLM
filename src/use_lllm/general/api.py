@@ -39,6 +39,7 @@ def _static_ui_ready() -> bool:
         STATIC_ROOT / "app.js",
         STATIC_ROOT / "styles.css",
         STATIC_ROOT / "pca-plot.js",
+        STATIC_ROOT / "eic-plot.js",
         VENDOR_ROOT / "plotly.min.js",
     )
     return all(path.is_file() for path in required_files)

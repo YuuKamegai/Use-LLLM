@@ -299,6 +299,7 @@ function renderMessage(item) {
   if (item.role !== "user") { const meta = document.createElement("div"); meta.className = "message-meta"; meta.textContent = item.role === "tool" ? item.metadata.tool_name || "MCP TOOL" : "LOCAL ASSISTANT"; bubble.append(meta); }
   const content = document.createElement("div"); content.className = "message-content"; content.textContent = item.content || (item.metadata.tool_calls ? "ツールの実行を準備しました。" : ""); bubble.append(content);
   appendPcaPlot(bubble, item);
+  appendEicPlot(bubble, item);
   article.append(bubble);
   return article;
 }
@@ -335,6 +336,43 @@ function appendPcaPlot(bubble, item) {
         margin: { l: 58, r: 22, t: 18, b: 52 },
         xaxis: { title: pca.xLabel, zeroline: false, gridcolor: "#ebe8e1" },
         yaxis: { title: pca.yLabel, zeroline: false, gridcolor: "#ebe8e1" },
+        legend: { orientation: "h", y: -0.22 },
+        hovermode: "closest",
+        paper_bgcolor: "transparent",
+        plot_bgcolor: "#ffffff",
+        font: { family: '"Segoe UI Variable", "Yu Gothic UI", sans-serif', color: "#3d3b36", size: 11 },
+      },
+      { responsive: true, displaylogo: false, scrollZoom: true },
+    )).then(() => {
+      scrollConversationToEnd();
+    });
+  };
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(draw); else draw();
+}
+
+function appendEicPlot(bubble, item) {
+  if (item.role !== "tool" || item.metadata?.is_error || !window.Plotly || !window.GeneralEicPlot) return;
+  const eic = window.GeneralEicPlot.findPlot(item.content);
+  if (!eic?.series?.length) return;
+
+  bubble.classList.add("has-plot");
+  const card = document.createElement("section"); card.className = "chat-plot-card";
+  const heading = document.createElement("div"); heading.className = "chat-plot-heading";
+  const title = document.createElement("strong"); title.textContent = eic.title;
+  const note = document.createElement("span"); note.textContent = `${eic.series.length} traces · hover / zoom / legend filter`;
+  heading.append(title, note);
+  const plot = document.createElement("div"); plot.className = "chat-pca-plot";
+  plot.setAttribute("aria-label", `${eic.title} Plotly chart`);
+  card.append(heading, plot); bubble.append(card);
+
+  const draw = () => {
+    Promise.resolve(Plotly.react(
+      plot,
+      window.GeneralEicPlot.traces(eic),
+      {
+        margin: { l: 68, r: 22, t: 18, b: 52 },
+        xaxis: { title: eic.xLabel, zeroline: false, gridcolor: "#ebe8e1" },
+        yaxis: { title: eic.yLabel, rangemode: "tozero", zeroline: false, gridcolor: "#ebe8e1" },
         legend: { orientation: "h", y: -0.22 },
         hovermode: "closest",
         paper_bgcolor: "transparent",

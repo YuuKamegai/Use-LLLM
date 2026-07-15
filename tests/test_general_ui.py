@@ -39,7 +39,9 @@ class GeneralUiContractTests(unittest.TestCase):
         self.assertIn("server::tool", html)
         self.assertIn("./vendor/plotly.min.js", html)
         self.assertIn("./static/pca-plot.js", html)
+        self.assertIn("./static/eic-plot.js", html)
         self.assertIn("appendPcaPlot", script)
+        self.assertIn("appendEicPlot", script)
         self.assertIn("function appendMessage(item)", script)
         self.assertIn('const workspace = $("#chat-workspace")', script)
         self.assertIn("workspace.scrollTop = workspace.scrollHeight", script)
@@ -72,6 +74,7 @@ class GeneralUiContractTests(unittest.TestCase):
                 script = client.get("/static/app.js")
                 styles = client.get("/static/styles.css")
                 pca_helper = client.get("/static/pca-plot.js")
+                eic_helper = client.get("/static/eic-plot.js")
                 plotly = client.get("/vendor/plotly.min.js")
                 launcher_health = client.get("/api/launcher-health")
         self.assertEqual(index.status_code, 200)
@@ -81,6 +84,8 @@ class GeneralUiContractTests(unittest.TestCase):
         self.assertEqual(styles.status_code, 200)
         self.assertEqual(pca_helper.status_code, 200)
         self.assertIn("GeneralPcaPlot", pca_helper.text)
+        self.assertEqual(eic_helper.status_code, 200)
+        self.assertIn("GeneralEicPlot", eic_helper.text)
         self.assertEqual(plotly.status_code, 200)
         self.assertEqual(
             launcher_health.json(),

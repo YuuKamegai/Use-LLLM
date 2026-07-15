@@ -41,6 +41,10 @@ RULES: dict[str, ToolStateRule] = {
     "ms-data-parser::arf_list_sample_roles": ToolStateRule(requires=("arf_dataset",)),
     "ms-data-parser::arf_differential": ToolStateRule(requires=("arf_dataset",)),
     "ms-data-parser::save_pca_figure": ToolStateRule(requires=("pca_result",)),
+    "ms-data-parser::eicaef_plot_chromatograms": ToolStateRule(
+        provides=("eic_plot",), replay_safe=True
+    ),
+    "ms-data-parser::save_eic_figure": ToolStateRule(requires=("eic_plot",)),
 }
 
 
@@ -58,6 +62,7 @@ def indicates_missing_state(tool_name: str, result_text: str) -> bool:
     return any(
         marker in result_text
         for marker in (
+            "先に eicaef_plot_chromatograms",
             "先に arf_parser",
             "PCA結果がありません",
             "データを読み込んでください",

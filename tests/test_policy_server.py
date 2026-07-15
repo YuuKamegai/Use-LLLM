@@ -19,6 +19,14 @@ class ClassifyServerToolTests(unittest.TestCase):
             classify_server_tool("ms-data-parser", "write_report"),
             ToolSafety.LOCAL_WRITE,
         )
+        self.assertEqual(
+            classify_server_tool("ms-data-parser", "eicaef_plot_chromatograms"),
+            ToolSafety.READ_ONLY,
+        )
+        self.assertEqual(
+            classify_server_tool("ms-data-parser", "save_eic_figure"),
+            ToolSafety.LOCAL_WRITE,
+        )
 
     def test_unknown_server_unknown_tool_is_unknown(self) -> None:
         self.assertEqual(classify_server_tool("other", "do_thing"), ToolSafety.UNKNOWN)

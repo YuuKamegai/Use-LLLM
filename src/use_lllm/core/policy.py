@@ -38,6 +38,7 @@ READ_ONLY_TOOLS = frozenset(
         "arf2_parser",
         "arf2_annotate_identities",
         "eicaef_parser",
+        "eicaef_plot_chromatograms",
         "eicaef_top_peak_tops",
         "eicaef_search_by_mz_range",
         "eicaef_search_by_rt_range",
@@ -49,6 +50,7 @@ LOCAL_WRITE_TOOLS = frozenset(
     {
         "write_report",
         "save_pca_figure",
+        "save_eic_figure",
         "save_volcano_figure",
         "record_objective",
         "update_objective",
