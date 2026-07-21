@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from use_lllm.core.config import ConfigurationError, OllamaConfig
 from use_lllm.core.endpoints import Endpoint, EndpointRegistry
+from use_lllm.core.knowledge import KnowledgeStore
 from use_lllm.core.mcp_client import MCPConnectionError
+from use_lllm.core.mcp_oauth import oauth_callbacks
 from use_lllm.core.mcp_registry import MCPRegistry
 from use_lllm.core.ollama import OllamaClient, OllamaError
 from use_lllm.core.policy import ToolPolicyError
@@ -27,6 +30,7 @@ from use_lllm.core.settings_store import (
     load_settings,
     save_settings,
 )
+from use_lllm.core.setup_store import SETUP_VERSION, SetupStore
 from use_lllm.general.agent_loop import GeneralAgentLoop
 
 STATIC_ROOT = Path(__file__).with_name("static")
@@ -40,6 +44,8 @@ def _static_ui_ready() -> bool:
         STATIC_ROOT / "styles.css",
         STATIC_ROOT / "pca-plot.js",
         STATIC_ROOT / "eic-plot.js",
+        STATIC_ROOT / "markdown.js",
+        STATIC_ROOT / "artifact-renderer.js",
         VENDOR_ROOT / "plotly.min.js",
     )
     return all(path.is_file() for path in required_files)
@@ -58,12 +64,16 @@ class EndpointBody(StrictModel):
 
 class MCPServerBody(StrictModel):
     name: str
-    command: str
+    command: str = ""
     args: list[str] = Field(default_factory=list)
     cwd: str | None = None
     env: dict[str, str] | None = None
     autostart: bool = False
     read_only_auto: bool = False
+    transport: str = "stdio"
+    url: str | None = None
+    headers: dict[str, str] | None = None
+    auth_mode: str = "none"
 
 
 class SessionBody(StrictModel):
@@ -72,10 +82,40 @@ class SessionBody(StrictModel):
 
 class ChatBody(StrictModel):
     message: str
+    attachment_ids: list[str] = Field(default_factory=list)
+
+
+class ToolPreferencesBody(StrictModel):
+    disabled_tools: list[str] = Field(default_factory=list)
+
+
+class KnowledgeUploadBody(StrictModel):
+    name: str
+    content_base64: str
+    mime_type: str = "application/octet-stream"
+
+
+class ClaudeImportBody(StrictModel):
+    config: dict[str, Any]
+
+
+class ResourceReadBody(StrictModel):
+    server: str
+    uri: str
+
+
+class PromptGetBody(StrictModel):
+    server: str
+    name: str
+    arguments: dict[str, str] = Field(default_factory=dict)
 
 
 class ApprovalBody(StrictModel):
     approved: bool
+
+
+class SetupModelBody(StrictModel):
+    model: str
 
 
 RegistryFactory = Callable[[tuple[MCPServerSpec, ...]], MCPRegistry]
@@ -92,6 +132,8 @@ class GeneralRuntime:
         ollama_factory: OllamaFactory,
     ) -> None:
         self.sessions = sessions
+        self.knowledge = KnowledgeStore(sessions.base_directory)
+        self.setup = SetupStore(sessions.base_directory)
         self.settings_path = settings_path
         self.registry_factory = registry_factory
         self.ollama_factory = ollama_factory
@@ -135,6 +177,17 @@ class GeneralRuntime:
             self.autostart_attempted = True
             await self.registry.connect_autostart()
 
+    async def select_model(self, model: str) -> None:
+        name = model.strip()
+        if not name or len(name) > 200 or any(char.isspace() for char in name):
+            raise ValueError("モデル名が不正です。")
+        selected = self.settings.selected_endpoint
+        endpoints = tuple(
+            Endpoint(item.name, item.base_url, item.trust, name) if item.name == selected else item
+            for item in self.settings.endpoints
+        )
+        await self.apply(Settings(endpoints, selected, self.settings.mcp_servers))
+
     def public_settings(self) -> dict[str, Any]:
         return {
             "endpoints": [
@@ -155,6 +208,10 @@ class GeneralRuntime:
                     "args": list(item.args),
                     "cwd": item.cwd,
                     "env_keys": sorted(key for key, _value in item.env),
+                    "transport": item.transport,
+                    "url": item.url,
+                    "header_keys": sorted(key for key, _value in item.headers),
+                    "auth_mode": item.auth_mode,
                     "autostart": item.autostart,
                     "read_only_auto": item.read_only_auto,
                 }
@@ -181,6 +238,13 @@ def _server(body: MCPServerBody, existing: MCPServerSpec | None = None) -> MCPSe
         if existing is not None
         else ()
     )
+    headers = (
+        tuple(sorted(body.headers.items()))
+        if body.headers is not None
+        else existing.headers
+        if existing is not None
+        else ()
+    )
     return MCPServerSpec(
         name=body.name.strip(),
         command=body.command.strip(),
@@ -189,6 +253,10 @@ def _server(body: MCPServerBody, existing: MCPServerSpec | None = None) -> MCPSe
         env=env,
         autostart=body.autostart,
         read_only_auto=body.read_only_auto,
+        transport=body.transport,
+        url=(body.url or "").strip() or None,
+        headers=headers,
+        auth_mode=body.auth_mode,
     )
 
 
@@ -231,6 +299,8 @@ def create_general_app(
     app = FastAPI(title="Use-LLLM General", version="0.1.0", lifespan=lifespan)
     app.state.runtime = runtime
     app.state.sessions = sessions
+    app.state.knowledge = runtime.knowledge
+    app.state.setup = runtime.setup
 
     if STATIC_ROOT.is_dir():
         app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="general-static")
@@ -274,6 +344,67 @@ def create_general_app(
             "tools": runtime.registry.tool_names(),
             "storage": {"database": str(sessions.database_path)},
         }
+
+    @app.get("/api/setup")
+    async def setup_status() -> dict[str, Any]:
+        try:
+            ollama = await runtime.ollama.health()
+        except Exception as exc:
+            ollama = {"status": "unavailable", "error": str(exc), "models": []}
+        return {
+            "completed": runtime.setup.is_complete(),
+            "setup_version": SETUP_VERSION,
+            "state": runtime.setup.load(),
+            "ollama": ollama,
+            "selected_endpoint": runtime.settings.selected_endpoint,
+            "selected_model": runtime.endpoints.selected().default_model,
+            "ollama_download_url": "https://ollama.com/download/windows",
+            "mcp_optional": True,
+        }
+
+    @app.post("/api/setup/model")
+    async def select_setup_model(body: SetupModelBody) -> dict[str, Any]:
+        try:
+            await runtime.select_model(body.model)
+            return await setup_status()
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.post("/api/setup/models/pull")
+    async def pull_setup_model(body: SetupModelBody) -> StreamingResponse:
+        async def generate():
+            try:
+                async for item in runtime.ollama.pull_model(body.model):
+                    yield json.dumps(item, ensure_ascii=False) + "\n"
+                await runtime.select_model(body.model)
+                yield (
+                    json.dumps(
+                        {"status": "ready", "model": body.model.strip(), "done": True},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                yield json.dumps({"error": str(exc), "done": True}, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+    @app.post("/api/setup/complete")
+    async def complete_setup(body: SetupModelBody) -> dict[str, Any]:
+        try:
+            await runtime.select_model(body.model)
+            health = await runtime.ollama.health()
+            if health.get("status") != "ready":
+                raise ValueError("選択したOllamaモデルを利用できません。")
+            state = runtime.setup.mark_complete(
+                endpoint=runtime.settings.selected_endpoint,
+                model=body.model.strip(),
+            )
+            return {"completed": True, "state": state, "ollama": health}
+        except Exception as exc:
+            _raise_http(exc)
 
     @app.get("/api/settings")
     async def get_settings() -> dict[str, Any]:
@@ -415,9 +546,97 @@ def create_general_app(
         except Exception as exc:
             _raise_http(exc)
 
+    @app.get("/api/mcp-oauth/callback", response_class=HTMLResponse)
+    async def mcp_oauth_callback(code: str, state: str | None = None) -> HTMLResponse:
+        delivered = oauth_callbacks.deliver(code, state)
+        message = "認証が完了しました。このタブを閉じてUse-LLLMへ戻ってください。"
+        if not delivered:
+            message = "待機中のMCP OAuth接続が見つかりません。"
+        return HTMLResponse(f"<h1>Use-LLLM</h1><p>{message}</p>")
+
+    @app.post("/api/mcp-servers/import-claude")
+    async def import_claude(body: ClaudeImportBody) -> dict[str, Any]:
+        try:
+            raw = body.config.get("mcpServers", {})
+            if not isinstance(raw, dict):
+                raise ValueError("Claude設定のmcpServersがobjectではありません。")
+            existing = {item.name for item in runtime.settings.mcp_servers}
+            additions: list[MCPServerSpec] = []
+            for name, item in raw.items():
+                if name in existing or not isinstance(item, dict):
+                    continue
+                transport = str(
+                    item.get("transport") or ("streamable_http" if item.get("url") else "stdio")
+                )
+                additions.append(
+                    MCPServerSpec(
+                        name=str(name),
+                        command=str(item.get("command", "")),
+                        args=tuple(str(value) for value in item.get("args", [])),
+                        cwd=item.get("cwd"),
+                        env=tuple(sorted((str(k), str(v)) for k, v in item.get("env", {}).items())),
+                        transport=transport,
+                        url=item.get("url"),
+                        headers=tuple(
+                            sorted((str(k), str(v)) for k, v in item.get("headers", {}).items())
+                        ),
+                    )
+                )
+            await runtime.apply(
+                Settings(
+                    runtime.settings.endpoints,
+                    runtime.settings.selected_endpoint,
+                    runtime.settings.mcp_servers + tuple(additions),
+                )
+            )
+            return {
+                "imported": [item.name for item in additions],
+                "settings": runtime.public_settings(),
+            }
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.get("/api/mcp-servers/{name}/diagnostics")
+    async def diagnose_server(name: str) -> dict[str, Any]:
+        try:
+            spec = runtime.registry.spec(name)
+            spec.validate()
+            status = runtime.registry.status(name)
+            return {
+                "ok": status["status"] == "connected",
+                "transport": spec.transport,
+                "target": spec.command if spec.transport == "stdio" else spec.url,
+                "auth_mode": spec.auth_mode,
+                "status": status,
+            }
+        except Exception as exc:
+            _raise_http(exc)
+
     @app.get("/api/tools")
     async def list_tools() -> dict[str, Any]:
         return {"tools": runtime.registry.tool_names()}
+
+    @app.get("/api/resources")
+    async def list_resources() -> dict[str, Any]:
+        return {"resources": runtime.registry.resources()}
+
+    @app.post("/api/resources/read")
+    async def read_resource(body: ResourceReadBody) -> dict[str, Any]:
+        try:
+            return await runtime.registry.read_resource(body.server, body.uri)
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.get("/api/prompts")
+    async def list_prompts() -> dict[str, Any]:
+        return {"prompts": runtime.registry.prompts()}
+
+    @app.post("/api/prompts/get")
+    async def get_prompt(body: PromptGetBody) -> dict[str, Any]:
+        try:
+            return await runtime.registry.get_prompt(body.server, body.name, body.arguments)
+        except Exception as exc:
+            _raise_http(exc)
 
     def general_session(session_id: str) -> dict[str, Any]:
         session = sessions.get_session(session_id)
@@ -451,11 +670,58 @@ def create_general_app(
         except Exception as exc:
             _raise_http(exc)
 
+    @app.put("/api/sessions/{session_id}/tools")
+    async def set_session_tools(session_id: str, body: ToolPreferencesBody) -> dict[str, Any]:
+        try:
+            general_session(session_id)
+            known = set(runtime.registry.tool_names())
+            invalid = sorted(set(body.disabled_tools) - known)
+            if invalid:
+                raise ValueError("未登録のMCPツールです: " + ", ".join(invalid))
+            return sessions.update_session(
+                session_id, state_patch={"disabled_tools": sorted(set(body.disabled_tools))}
+            )
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.get("/api/knowledge")
+    async def list_knowledge() -> dict[str, Any]:
+        return {"sources": runtime.knowledge.list()}
+
+    @app.get("/api/knowledge/search")
+    async def search_knowledge(q: str = Query(default="", max_length=500)) -> dict[str, Any]:
+        try:
+            return {"sources": runtime.knowledge.search(q)}
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.post("/api/knowledge", status_code=201)
+    async def add_knowledge(body: KnowledgeUploadBody) -> dict[str, Any]:
+        try:
+            data = base64.b64decode(body.content_base64, validate=True)
+            return runtime.knowledge.add_bytes(body.name, data, body.mime_type)
+        except Exception as exc:
+            _raise_http(
+                exc if isinstance(exc, ValueError) else ValueError("Base64データが不正です。")
+            )
+
+    @app.delete("/api/knowledge/{source_id}")
+    async def delete_knowledge(source_id: str) -> dict[str, bool]:
+        try:
+            runtime.knowledge.delete(source_id)
+            return {"deleted": True}
+        except Exception as exc:
+            _raise_http(exc)
+
     @app.post("/api/sessions/{session_id}/chat")
     async def chat(session_id: str, body: ChatBody) -> dict[str, Any]:
         try:
             general_session(session_id)
-            return await runtime.agent.chat(session_id, body.message)
+            attachment_context = runtime.knowledge.attachment_context(body.attachment_ids)
+            metadata = {"attachment_ids": body.attachment_ids}
+            if attachment_context:
+                metadata["attachment_context"] = attachment_context
+            return await runtime.agent.chat(session_id, body.message, metadata=metadata)
         except Exception as exc:
             _raise_http(exc)
 
@@ -465,10 +731,15 @@ def create_general_app(
 
         async def generate():
             try:
-                async for item in runtime.agent.chat_stream(session_id, body.message):
+                attachment_context = runtime.knowledge.attachment_context(body.attachment_ids)
+                metadata = {"attachment_ids": body.attachment_ids}
+                if attachment_context:
+                    metadata["attachment_context"] = attachment_context
+                async for item in runtime.agent.chat_stream(
+                    session_id, body.message, metadata=metadata
+                ):
                     yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
             except asyncio.CancelledError:
-                sessions.append_event(session_id, "general_chat_cancelled", {}, status="cancelled")
                 raise
             except Exception as exc:
                 yield f"data: {json.dumps({'type': 'error', 'error': str(exc)}, ensure_ascii=False)}\n\n"

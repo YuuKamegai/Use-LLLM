@@ -7,7 +7,6 @@ from pathlib import Path
 from use_lllm.core.config import ConfigurationError
 from use_lllm.core.endpoints import TRUST_LAN_ALLOWED, Endpoint
 from use_lllm.core.settings_store import (
-    MS_DATA_PARSER,
     MCPServerSpec,
     Settings,
     default_settings,
@@ -33,17 +32,12 @@ class MCPServerSpecTests(unittest.TestCase):
 
 
 class DefaultSettingsTests(unittest.TestCase):
-    def test_default_has_local_loopback_and_ms_data_parser(self) -> None:
+    def test_default_has_local_loopback_and_no_required_mcp_server(self) -> None:
         settings = default_settings()
         self.assertEqual(settings.selected_endpoint, "local")
         self.assertEqual([e.name for e in settings.endpoints], ["local"])
         self.assertTrue(settings.endpoints[0].base_url.startswith("http://127.0.0.1"))
-        names = [s.name for s in settings.mcp_servers]
-        self.assertIn(MS_DATA_PARSER, names)
-
-    def test_ms_data_parser_defaults_to_read_only_auto(self) -> None:
-        spec = next(s for s in default_settings().mcp_servers if s.name == MS_DATA_PARSER)
-        self.assertTrue(spec.read_only_auto)
+        self.assertEqual(settings.mcp_servers, ())
 
 
 class RoundTripTests(unittest.TestCase):

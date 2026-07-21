@@ -47,6 +47,9 @@ class MCPServerSnapshot:
     server_version: str
     protocol_version: str
     tools: tuple[ToolDescription, ...]
+    resources: tuple[dict[str, Any], ...] = ()
+    resource_templates: tuple[dict[str, Any], ...] = ()
+    prompts: tuple[dict[str, Any], ...] = ()
 
     @property
     def tool_count(self) -> int:
@@ -61,6 +64,9 @@ class MCPServerSnapshot:
             },
             "tool_count": self.tool_count,
             "tools": [tool.to_dict() for tool in self.tools],
+            "resources": list(self.resources),
+            "resource_templates": list(self.resource_templates),
+            "prompts": list(self.prompts),
         }
 
 

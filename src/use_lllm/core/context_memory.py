@@ -44,6 +44,9 @@ class ContextAssembly:
     messages: list[dict[str, Any]]
     estimated_tokens: int
     summary_created: bool
+    context_window: int
+    input_budget: int
+    tool_tokens: int
 
 
 def estimate_tokens(value: Any) -> int:
@@ -108,11 +111,11 @@ class ContextMemoryManager:
         self.input_ratio = input_ratio
         self.recent_user_turns = max(1, recent_user_turns)
         self._context_resolved = context_window is not None or env_window is not None
+        self._context_window_source = "configured" if self._context_resolved else "fallback"
 
-    async def _resolve_context_window(self) -> None:
-        if self._context_resolved:
+    async def _resolve_context_window(self, *, refresh: bool = False) -> None:
+        if self._context_resolved and not refresh:
             return
-        self._context_resolved = True
         resolver = getattr(self.ollama, "context_window", None)
         if resolver is None:
             return
@@ -122,14 +125,18 @@ class ContextMemoryManager:
             return
         if isinstance(value, int) and value >= 2048:
             self.context_window = value
+            self._context_resolved = True
+            self._context_window_source = "ollama"
 
     @staticmethod
     def _stored_message(stored: dict[str, Any]) -> dict[str, Any]:
         content = str(stored["content"])
         if stored["role"] == "tool":
             content = compact_tool_result(content, 900)
-        item: dict[str, Any] = {"role": stored["role"], "content": content}
         metadata = stored.get("metadata", {})
+        if metadata.get("attachment_context"):
+            content += "\n\n[添付されたローカル資料]\n" + str(metadata["attachment_context"])
+        item: dict[str, Any] = {"role": stored["role"], "content": content}
         if metadata.get("tool_calls"):
             item["tool_calls"] = metadata["tool_calls"]
         if metadata.get("tool_name"):
@@ -273,8 +280,10 @@ class ContextMemoryManager:
             return result
 
         messages = render(prior)
-        budget = max(1024, int(self.context_window * self.input_ratio) - estimate_tokens(tools))
-        while estimate_tokens(messages) > budget:
+        tool_tokens = estimate_tokens(tools)
+        input_budget = max(1024, int(self.context_window * self.input_ratio))
+        message_budget = max(1024, input_budget - tool_tokens)
+        while estimate_tokens(messages) > message_budget:
             boundary = self._recent_boundary(raw)
             candidates = [item for item in raw if boundary and int(item["id"]) < boundary]
             if not candidates:
@@ -297,4 +306,69 @@ class ContextMemoryManager:
             raw = [item for item in stored if int(item["id"]) > covered]
             messages = render(prior)
 
-        return ContextAssembly(messages, estimate_tokens(messages), summary_created)
+        return ContextAssembly(
+            messages,
+            estimate_tokens(messages),
+            summary_created,
+            self.context_window,
+            input_budget,
+            tool_tokens,
+        )
+
+    async def context_usage(
+        self,
+        assembled: ContextAssembly,
+        *,
+        model: str,
+        response_content: str,
+        response_metadata: dict[str, Any] | None = None,
+        prompt_eval_count: int | None = None,
+    ) -> dict[str, Any]:
+        """Return a session-facing estimate of room left before automatic compaction."""
+
+        if not self._context_resolved:
+            await self._resolve_context_window(refresh=True)
+        context_window = self.context_window
+        input_budget = max(1024, int(context_window * self.input_ratio))
+        measured_prompt = (
+            prompt_eval_count
+            if isinstance(prompt_eval_count, int) and prompt_eval_count >= 0
+            else None
+        )
+        prompt_tokens = (
+            measured_prompt
+            if measured_prompt is not None
+            else assembled.estimated_tokens + assembled.tool_tokens
+        )
+        response_item: dict[str, Any] = {"role": "assistant", "content": response_content}
+        metadata = response_metadata or {}
+        if metadata.get("tool_calls"):
+            response_item["tool_calls"] = metadata["tool_calls"]
+        if metadata.get("tool_name"):
+            response_item["tool_name"] = metadata["tool_name"]
+        response_tokens = estimate_tokens(response_item)
+        used_tokens = prompt_tokens + response_tokens
+        remaining_tokens = max(0, input_budget - used_tokens)
+        remaining_percent = max(
+            0,
+            min(100, round((remaining_tokens / input_budget) * 100)),
+        )
+        return {
+            "model": model,
+            "context_window": context_window,
+            "context_window_source": self._context_window_source,
+            "input_budget": input_budget,
+            "used_tokens": used_tokens,
+            "remaining_tokens": remaining_tokens,
+            "remaining_percent": remaining_percent,
+            "prompt_tokens": prompt_tokens,
+            "response_tokens_estimate": response_tokens,
+            "tool_tokens_estimate": assembled.tool_tokens,
+            "accuracy": "estimated",
+            "measurement_source": (
+                "ollama_prompt_plus_response_estimate"
+                if measured_prompt is not None
+                else "local_estimate"
+            ),
+            "summary_created": assembled.summary_created,
+        }

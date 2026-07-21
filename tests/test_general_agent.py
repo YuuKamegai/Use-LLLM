@@ -11,11 +11,18 @@ from use_lllm.core.sessions import SessionStore
 from use_lllm.general.agent_loop import GeneralAgentLoop
 
 
-def response(content: str = "", tool: str | None = None, arguments=None):
+def response(
+    content: str = "",
+    tool: str | None = None,
+    arguments=None,
+    *,
+    prompt_eval_count: int | None = None,
+    eval_count: int | None = None,
+):
     message = {"role": "assistant", "content": content}
     if tool:
         message["tool_calls"] = [{"function": {"name": tool, "arguments": arguments or {}}}]
-    return OllamaResponse(message, "fake", None, None, None)
+    return OllamaResponse(message, "fake", None, prompt_eval_count, eval_count)
 
 
 class FakeOllama:
@@ -28,6 +35,20 @@ class FakeOllama:
         if not self.responses:
             raise AssertionError("unexpected Ollama call")
         return self.responses.pop(0)
+
+
+class StreamingOllama(FakeOllama):
+    async def stream_chat(self, messages, **kwargs):
+        self.calls.append({"messages": messages, **kwargs})
+        yield {"model": "fake", "message": {"content": "こん"}}
+        yield {"model": "fake", "message": {"content": "にちは"}}
+        yield {
+            "model": "fake",
+            "message": {},
+            "done": True,
+            "prompt_eval_count": 120,
+            "eval_count": 8,
+        }
 
 
 class FakeRegistry:
@@ -90,7 +111,7 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     async def test_plain_chat_is_persisted(self) -> None:
-        ollama = FakeOllama([response("こんにちは。")])
+        ollama = FakeOllama([response("こんにちは。", prompt_eval_count=80, eval_count=6)])
         loop = GeneralAgentLoop(ollama, self.store, FakeRegistry({}))
 
         result = await loop.chat(self.session["id"], "こんにちは")
@@ -99,6 +120,23 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["content"], "こんにちは。")
         messages = self.store.list_messages(self.session["id"])
         self.assertEqual([item["role"] for item in messages], ["user", "assistant"])
+        usage = self.store.get_session(self.session["id"])["state"]["context_usage"]
+        self.assertEqual(usage["prompt_tokens"], 80)
+        self.assertEqual(usage["measurement_source"], "ollama_prompt_plus_response_estimate")
+
+    async def test_stream_chat_forwards_deltas_and_persists_final_answer(self) -> None:
+        loop = GeneralAgentLoop(StreamingOllama([]), self.store, FakeRegistry({}))
+
+        events = [item async for item in loop.chat_stream(self.session["id"], "こんにちは")]
+
+        self.assertEqual(
+            [item["type"] for item in events], ["status", "delta", "delta", "complete"]
+        )
+        self.assertEqual("".join(item.get("content", "") for item in events[1:3]), "こんにちは")
+        self.assertEqual(self.store.list_messages(self.session["id"])[-1]["content"], "こんにちは")
+        usage = self.store.get_session(self.session["id"])["state"]["context_usage"]
+        self.assertEqual(usage["prompt_tokens"], 120)
+        self.assertEqual(events[-1]["context_usage"], usage)
 
     async def test_read_only_auto_tool_runs_then_model_answers(self) -> None:
         ollama = FakeOllama([response(tool="srv::peek", arguments={"x": 1}), response("完了")])

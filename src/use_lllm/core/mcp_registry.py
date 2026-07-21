@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import secrets
 from collections.abc import AsyncIterator, Callable
@@ -11,7 +12,11 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from mcp import ClientSession, StdioServerParameters
+from mcp.client.auth import OAuthClientProvider
+from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamablehttp_client
+from mcp.shared.auth import OAuthClientMetadata
 
 from use_lllm.core.mcp_client import (
     MCPClient,
@@ -21,6 +26,7 @@ from use_lllm.core.mcp_client import (
     ToolDescription,
     list_all_tools,
 )
+from use_lllm.core.mcp_oauth import MemoryTokenStorage, oauth_callbacks, oauth_storages
 from use_lllm.core.policy import ToolDecision, ToolPolicyError, decide_server_tool
 from use_lllm.core.settings_store import MCPServerSpec
 
@@ -55,6 +61,47 @@ async def stdio_session(spec: MCPServerSpec) -> AsyncIterator[ClientSession]:
         raise
     except Exception as exc:
         raise MCPConnectionError(f"MCPサーバー {spec.name} とのstdio通信に失敗しました。") from exc
+
+
+def _oauth_provider(spec: MCPServerSpec) -> OAuthClientProvider | None:
+    if spec.auth_mode != "oauth":
+        return None
+    storage = oauth_storages.setdefault(spec.name, MemoryTokenStorage())
+    web_port = int(os.environ.get("USE_LLLM_WEB_PORT", "8765"))
+    return OAuthClientProvider(
+        spec.url or "",
+        OAuthClientMetadata(
+            redirect_uris=[f"http://127.0.0.1:{web_port}/general/api/mcp-oauth/callback"],
+            client_name="Use-LLLM",
+        ),
+        storage,
+        redirect_handler=oauth_callbacks.open_browser,
+        callback_handler=oauth_callbacks.wait,
+    )
+
+
+@asynccontextmanager
+async def mcp_session(spec: MCPServerSpec) -> AsyncIterator[ClientSession]:
+    """Open a stdio, Streamable HTTP, or legacy SSE MCP session."""
+
+    if spec.transport == "stdio":
+        async with stdio_session(spec) as session:
+            yield session
+        return
+    spec.validate()
+    kwargs = {"headers": spec.headers_dict() or None, "auth": _oauth_provider(spec)}
+    try:
+        transport = streamablehttp_client if spec.transport == "streamable_http" else sse_client
+        async with transport(spec.url or "", **kwargs) as streams:
+            read_stream, write_stream = streams[0], streams[1]
+            async with ClientSession(read_stream, write_stream) as session:
+                yield session
+    except MCPConnectionError:
+        raise
+    except Exception as exc:
+        raise MCPConnectionError(
+            f"MCPサーバー {spec.name} との{spec.transport}通信に失敗しました。"
+        ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +158,7 @@ class MCPRegistry:
             spec.validate()
         self._specs = {spec.name: spec for spec in specs}
         self._order = names
-        self._session_factory = session_factory or stdio_session
+        self._session_factory = session_factory or mcp_session
         self._startup_timeout = startup_timeout_seconds
         self._call_timeout = call_timeout_seconds
         self._snapshots: dict[str, MCPServerSnapshot] = {}
@@ -135,11 +182,19 @@ class MCPRegistry:
                 async with self._session_factory(spec) as session:
                     initialized = await session.initialize()
                     tools = await list_all_tools(session)
+                    resources = await self._list_capability(session, "list_resources", "resources")
+                    templates = await self._list_capability(
+                        session, "list_resource_templates", "resourceTemplates"
+                    )
+                    prompts = await self._list_capability(session, "list_prompts", "prompts")
             snapshot = MCPServerSnapshot(
                 server_name=str(initialized.serverInfo.name),
                 server_version=str(initialized.serverInfo.version),
                 protocol_version=str(initialized.protocolVersion),
                 tools=tools,
+                resources=resources,
+                resource_templates=templates,
+                prompts=prompts,
             )
             self._snapshots[name] = snapshot
             self._errors.pop(name, None)
@@ -161,6 +216,36 @@ class MCPRegistry:
                 except Exception:
                     results.append(self.status(name))
         return results
+
+    @staticmethod
+    async def _list_capability(
+        session: RegistrySession, method_name: str, field_name: str
+    ) -> tuple[dict[str, Any], ...]:
+        method = getattr(session, method_name, None)
+        if method is None:
+            return ()
+        result: list[dict[str, Any]] = []
+        cursor: str | None = None
+        seen: set[str] = set()
+        try:
+            while True:
+                page = await method(cursor=cursor)
+                values = getattr(page, field_name, ()) or ()
+                result.extend(
+                    item if isinstance(item, dict) else item.model_dump(mode="json", by_alias=True)
+                    for item in values
+                )
+                cursor = getattr(page, "nextCursor", None)
+                if cursor is None:
+                    break
+                if cursor in seen:
+                    raise MCPConnectionError(
+                        f"{method_name} が同じカーソルを繰り返しました: {cursor}"
+                    )
+                seen.add(cursor)
+        except Exception:
+            return ()
+        return tuple(result)
 
     async def disconnect(self, name: str) -> dict[str, Any]:
         self.spec(name)
@@ -294,6 +379,9 @@ class MCPRegistry:
             else "disconnected",
             "read_only_auto": spec.read_only_auto,
             "tool_count": snapshot.tool_count if snapshot is not None else 0,
+            "resource_count": len(snapshot.resources) if snapshot is not None else 0,
+            "prompt_count": len(snapshot.prompts) if snapshot is not None else 0,
+            "transport": spec.transport,
             "server": snapshot.server_name if snapshot is not None else None,
             "version": snapshot.server_version if snapshot is not None else None,
             "error": self._errors.get(name),
@@ -313,7 +401,13 @@ class MCPRegistry:
     def tool_names(self) -> list[str]:
         return [tool.qualified_name for tool in self.tools()]
 
-    def ollama_tools(self, query: str | None = None, *, limit: int = 12) -> list[dict[str, Any]]:
+    def ollama_tools(
+        self,
+        query: str | None = None,
+        *,
+        limit: int = 24,
+        excluded: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """現在の発話に近いtool候補だけをOllamaへ渡す。
 
         UIと監査では全件を維持する。明示名を最優先し、無一致時も先頭候補を
@@ -322,11 +416,21 @@ class MCPRegistry:
 
         if limit <= 0:
             raise ValueError("tool候補上限は1以上にしてください。")
-        tools = self.tools()
+        tools = [tool for tool in self.tools() if tool.qualified_name not in (excluded or set())]
         if not query:
             return [tool.to_ollama_tool() for tool in tools[:limit]]
         folded = query.casefold()
-        query_tokens = {token for token in re.findall(r"[a-z0-9_\-.]+", folded) if len(token) >= 2}
+        query_tokens = {
+            token for token in re.findall(r"[^\W_]+", folded, flags=re.UNICODE) if len(token) >= 2
+        }
+
+        synonyms = {
+            "検索": ("search", "find", "query", "list"),
+            "読む": ("read", "get", "fetch"),
+            "一覧": ("list", "search"),
+            "保存": ("save", "write", "create"),
+            "解析": ("analyze", "analysis", "parse"),
+        }
 
         def score(item: RegisteredTool) -> int:
             qualified = item.qualified_name.casefold()
@@ -343,10 +447,48 @@ class MCPRegistry:
             for token in query_tokens:
                 if token in description:
                     value += 2
+                if any(word in description or word in name for word in synonyms.get(token, ())):
+                    value += 12
             return value
 
         ranked = sorted(enumerate(tools), key=lambda pair: (-score(pair[1]), pair[0]))
         return [item.to_ollama_tool() for _index, item in ranked[:limit]]
+
+    def resources(self) -> list[dict[str, Any]]:
+        values: list[dict[str, Any]] = []
+        for name in self._order:
+            snapshot = self._snapshots.get(name)
+            if snapshot:
+                values.extend({"server": name, **item} for item in snapshot.resources)
+                values.extend(
+                    {"server": name, "template": True, **item}
+                    for item in snapshot.resource_templates
+                )
+        return values
+
+    def prompts(self) -> list[dict[str, Any]]:
+        values: list[dict[str, Any]] = []
+        for name in self._order:
+            snapshot = self._snapshots.get(name)
+            if snapshot:
+                values.extend({"server": name, **item} for item in snapshot.prompts)
+        return values
+
+    async def read_resource(self, server_name: str, uri: str) -> dict[str, Any]:
+        spec = self.spec(server_name)
+        async with self._session_factory(spec) as session:
+            await session.initialize()
+            result = await session.read_resource(uri)
+        return result.model_dump(mode="json", by_alias=True)
+
+    async def get_prompt(
+        self, server_name: str, name: str, arguments: dict[str, str] | None = None
+    ) -> dict[str, Any]:
+        spec = self.spec(server_name)
+        async with self._session_factory(spec) as session:
+            await session.initialize()
+            result = await session.get_prompt(name, arguments or {})
+        return result.model_dump(mode="json", by_alias=True)
 
     def get_tool(self, qualified_name: str) -> RegisteredTool:
         try:

@@ -62,6 +62,37 @@ class OllamaClient:
         models = data.get("models", [])
         return models if isinstance(models, list) else []
 
+    async def pull_model(self, model: str) -> AsyncIterator[dict[str, Any]]:
+        """Stream normalized progress records from Ollama's local model pull API."""
+
+        name = model.strip()
+        if not name or len(name) > 200 or any(char.isspace() for char in name):
+            raise ValueError("モデル名が不正です。")
+        timeout = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
+        try:
+            async with httpx.AsyncClient(base_url=self.config.base_url, timeout=timeout) as client:
+                async with client.stream(
+                    "POST", "/api/pull", json={"model": name, "stream": True}
+                ) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line.strip():
+                            continue
+                        item = json.loads(line)
+                        if not isinstance(item, dict):
+                            continue
+                        if item.get("error"):
+                            raise OllamaError(str(item["error"]))
+                        yield item
+        except httpx.ConnectError as exc:
+            raise OllamaError(
+                "Ollamaへ接続できません。Ollamaをインストールして起動してください。"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise OllamaError("モデル取得がタイムアウトしました。") from exc
+        except (httpx.HTTPError, json.JSONDecodeError) as exc:
+            raise OllamaError(f"モデル取得に失敗しました: {exc}") from exc
+
     async def health(self) -> dict[str, Any]:
         models = await self.list_models()
         names = [str(model.get("name", "")) for model in models]

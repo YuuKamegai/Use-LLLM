@@ -7,6 +7,39 @@
   <link rel="stylesheet" href="./static/styles.css">
 </head>
 <body>
+  <section id="setup-overlay" class="setup-overlay hidden" aria-labelledby="setup-title">
+    <div class="setup-card">
+      <span class="welcome-kicker">FIRST RUN · LOCAL ONLY</span>
+      <h1 id="setup-title">Use-LLLMを準備する</h1>
+      <p>Ollamaと会話モデルを確認します。MCPサーバーは任意で、完了後に必要なものだけ接続できます。</p>
+      <div class="setup-step">
+        <div><span class="setup-number">1</span><strong>Ollama</strong></div>
+        <p id="setup-ollama-status">確認中...</p>
+        <div class="setup-actions">
+          <a id="setup-ollama-download" class="button secondary" href="https://ollama.com/download/windows" target="_blank" rel="noreferrer">公式インストーラーを開く</a>
+          <button id="setup-refresh" type="button" class="button quiet">再確認</button>
+        </div>
+      </div>
+      <div class="setup-step">
+        <div><span class="setup-number">2</span><strong>会話モデル</strong></div>
+        <p>既存モデルを選ぶか、Ollamaから取得します。既定は品質優先のqwen3:14bです。</p>
+        <label>モデル名<input id="setup-model" list="setup-models" value="qwen3:14b" autocomplete="off"></label>
+        <datalist id="setup-models"></datalist>
+        <button id="setup-pull-model" type="button" class="button secondary">モデルを取得</button>
+        <div class="setup-progress" aria-live="polite"><div id="setup-progress-bar"></div></div>
+        <p id="setup-progress-label" class="muted">未開始</p>
+      </div>
+      <div class="setup-step optional-step">
+        <div><span class="setup-number">3</span><strong>MCP（任意）</strong></div>
+        <p>初期状態ではMCPサーバーを登録しません。セットアップ後の「接続と設定」から追加できます。</p>
+      </div>
+      <div class="setup-footer">
+        <span id="setup-error" class="danger-text" role="alert"></span>
+        <button id="setup-complete" type="button" class="button primary">準備を完了</button>
+      </div>
+    </div>
+  </section>
+
   <header class="app-header">
     <div class="brand-block">
       <span class="brand-mark" aria-hidden="true">U</span>
@@ -60,9 +93,17 @@
 
       <footer class="composer-wrap">
         <form id="chat-form" class="composer">
+          <div id="attachment-chips" class="attachment-chips"></div>
           <textarea id="chat-input" rows="2" placeholder="メッセージを入力。Shift + Enterで改行" aria-label="メッセージ"></textarea>
           <div class="composer-footer">
-            <div id="composer-status" class="composer-status">準備完了</div>
+            <div class="composer-meta">
+              <div id="composer-status" class="composer-status">準備完了</div>
+              <div id="context-meter" class="context-meter unknown" role="status" aria-live="polite" title="最初の応答後に推定します">
+                <span class="context-meter-dot" aria-hidden="true"></span>
+                <span id="context-meter-label">コンテキスト —</span>
+                <span class="context-meter-track" aria-hidden="true"><span id="context-meter-fill"></span></span>
+              </div>
+            </div>
             <div>
               <button id="cancel-chat" type="button" class="button quiet hidden">停止</button>
               <button id="send-chat" type="submit" class="send-button" aria-label="送信">送信 <span>↑</span></button>
@@ -98,10 +139,16 @@
         <div id="server-list" class="connection-list"></div>
         <form id="server-form" class="settings-form hidden">
           <input id="server-original" type="hidden">
+          <label>プリセット<select id="server-preset"><option value="">選択しない</option><option value="filesystem">Filesystem (npx)</option><option value="github">GitHub (npx)</option><option value="http">Streamable HTTP</option></select></label>
           <label>名前<input id="server-name" required placeholder="my-server"></label>
-          <label>コマンド<input id="server-command" required placeholder="python"></label>
+          <label>Transport<select id="server-transport"><option value="stdio">stdio</option><option value="streamable_http">Streamable HTTP</option><option value="sse">SSE (legacy)</option></select></label>
+          <label>コマンド<input id="server-command" placeholder="python"></label>
           <label>引数（1行1引数）<textarea id="server-args" rows="3" placeholder="C:\path with spaces\server.py"></textarea></label>
           <label>作業フォルダ<input id="server-cwd" placeholder="C:\path"></label>
+          <label>URL<input id="server-url" placeholder="https://mcp.example.com/mcp"></label>
+          <label>認証<select id="server-auth"><option value="none">なし / header</option><option value="oauth">OAuth 2.1</option></select></label>
+          <label>環境変数（KEY=VALUE、1行1件）<textarea id="server-env" rows="3"></textarea></label>
+          <label>HTTP headers（KEY=VALUE、1行1件）<textarea id="server-headers" rows="3"></textarea></label>
           <label class="check-row"><input id="server-autostart" type="checkbox">起動時に接続を試す</label>
           <label class="check-row"><input id="server-readonly" type="checkbox">確定read-onlyツールを自動実行</label>
           <p class="form-warning">未知・書き込み・外部通信ツールは、この設定に関係なく実行前に確認します。</p>
@@ -114,6 +161,24 @@
         <p class="muted">衝突を避けるため server::tool 形式で表示します。</p>
         <div id="tool-list" class="tool-list"><p class="muted">MCPサーバーを接続すると表示されます。</p></div>
       </section>
+
+      <section class="settings-section">
+        <div class="section-title"><h3>Knowledge</h3><label class="mini-button file-button">ファイル追加<input id="knowledge-file" type="file" multiple></label></div>
+        <p class="muted">5MB以下のテキスト資料をローカル保存し、選択した資料だけを会話へ添付します。</p>
+        <input id="knowledge-search" class="panel-search" placeholder="資料を検索">
+        <div id="knowledge-list" class="connection-list"></div>
+      </section>
+
+      <section class="settings-section">
+        <div class="section-title"><h3>MCP Resources / Prompts</h3><button id="refresh-capabilities" class="mini-button">更新</button></div>
+        <div id="resource-list" class="connection-list"></div>
+        <div id="prompt-list" class="connection-list"></div>
+      </section>
+
+      <section class="settings-section">
+        <div class="section-title"><h3>Claude Desktopから取込</h3><button id="import-claude" class="mini-button">取込</button></div>
+        <textarea id="claude-config" class="panel-textarea" rows="5" placeholder='{"mcpServers": {...}}'></textarea>
+      </section>
     </aside>
   </div>
 
@@ -121,6 +186,8 @@
   <script src="./vendor/plotly.min.js"></script>
   <script src="./static/pca-plot.js"></script>
   <script src="./static/eic-plot.js"></script>
+  <script src="./static/markdown.js"></script>
+  <script src="./static/artifact-renderer.js"></script>
   <script src="./static/app.js"></script>
 </body>
 </html>

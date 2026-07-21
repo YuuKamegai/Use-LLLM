@@ -5,7 +5,10 @@ const state = {
   sessions: [],
   current: null,
   tools: [],
+  knowledge: [],
+  attachments: [],
   controller: null,
+  setup: null,
 };
 
 async function api(path, options = {}) {
@@ -33,6 +36,96 @@ function toast(message, error = false) {
 function formatDate(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+function formatTokenCount(value) {
+  const count = Number(value);
+  if (!Number.isFinite(count) || count < 0) return "—";
+  if (count >= 1000) return `${(count / 1000).toFixed(count >= 10000 ? 1 : 2)}k`;
+  return Math.round(count).toLocaleString("ja-JP");
+}
+
+function renderContextUsage() {
+  const meter = $("#context-meter");
+  const label = $("#context-meter-label");
+  const fill = $("#context-meter-fill");
+  const usage = state.current?.state?.context_usage;
+  const remaining = Number(usage?.remaining_percent);
+  meter.classList.remove("unknown", "warning", "critical");
+  if (!usage || !Number.isFinite(remaining)) {
+    meter.classList.add("unknown");
+    label.textContent = "コンテキスト —";
+    fill.style.width = "0%";
+    meter.title = "最初の応答後に推定します";
+    return;
+  }
+  const percent = Math.max(0, Math.min(100, Math.round(remaining)));
+  if (percent < 15) meter.classList.add("critical");
+  else if (percent < 40) meter.classList.add("warning");
+  label.textContent = `残りコンテキスト ${percent}%`;
+  fill.style.width = `${percent}%`;
+  const compacted = usage.summary_created ? " 古い会話は直前の応答で要約されました。" : "";
+  meter.title = `自動要約まで推定 ${formatTokenCount(usage.remaining_tokens)} / ${formatTokenCount(usage.input_budget)} tokens。使用 ${formatTokenCount(usage.used_tokens)}、モデル上限 ${formatTokenCount(usage.context_window)}。${compacted}`.trim();
+}
+
+async function loadSetup() {
+  state.setup = await api("setup");
+  renderSetup();
+  return state.setup;
+}
+
+function renderSetup() {
+  const setup = state.setup;
+  const overlay = $("#setup-overlay");
+  overlay.classList.toggle("hidden", Boolean(setup?.completed));
+  if (!setup || setup.completed) return;
+  $("#setup-ollama-download").href = setup.ollama_download_url;
+  const ollama = setup.ollama || {};
+  const models = Array.isArray(ollama.models) ? ollama.models : [];
+  $("#setup-ollama-status").textContent = ollama.status === "unavailable"
+    ? `未接続: ${ollama.error || "Ollamaをインストールして起動してください。"}`
+    : `接続済み · ${models.length}モデル`;
+  const datalist = $("#setup-models"); datalist.textContent = "";
+  for (const model of models) { const option = document.createElement("option"); option.value = model; datalist.append(option); }
+  const input = $("#setup-model");
+  if (!input.dataset.touched) input.value = setup.selected_model || models[0] || "qwen3:14b";
+  $("#setup-complete").disabled = ollama.status === "unavailable";
+}
+
+function setupProgress(item) {
+  const completed = Number(item.completed || 0); const total = Number(item.total || 0);
+  const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+  $("#setup-progress-bar").style.width = `${percent}%`;
+  $("#setup-progress-label").textContent = total > 0 ? `${item.status || "取得中"} · ${percent}%` : item.status || "取得中";
+}
+
+async function pullSetupModel() {
+  const model = $("#setup-model").value.trim();
+  if (!model) return;
+  $("#setup-error").textContent = ""; $("#setup-pull-model").disabled = true;
+  try {
+    const response = await fetch("./api/setup/models/pull", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }) });
+    if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
+    const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read(); if (done) break;
+      buffer += decoder.decode(value, { stream: true }); const lines = buffer.split("\n"); buffer = lines.pop();
+      for (const line of lines) { if (!line.trim()) continue; const item = JSON.parse(line); if (item.error) throw new Error(item.error); setupProgress(item); }
+    }
+    await loadSetup();
+  } catch (error) { $("#setup-error").textContent = error.message; }
+  finally { $("#setup-pull-model").disabled = false; }
+}
+
+async function completeSetup() {
+  const model = $("#setup-model").value.trim();
+  $("#setup-error").textContent = ""; $("#setup-complete").disabled = true;
+  try {
+    await api("setup/complete", { method: "POST", body: JSON.stringify({ model }) });
+    await Promise.all([loadSetup(), loadSettings(), loadStatus()]);
+    toast("初回セットアップが完了しました。");
+  } catch (error) { $("#setup-error").textContent = error.message; }
+  finally { if (!state.setup?.completed) $("#setup-complete").disabled = false; }
 }
 
 async function loadSettings() {
@@ -158,7 +251,7 @@ function renderServerList() {
     top.className = "connection-top";
     const info = document.createElement("div");
     const title = document.createElement("strong"); title.textContent = item.name;
-    const detail = document.createElement("small"); detail.textContent = `${item.command} ${item.args.join(" ")}`.trim();
+    const detail = document.createElement("small"); detail.textContent = item.transport === "stdio" ? `${item.command} ${item.args.join(" ")}`.trim() : `${item.transport} · ${item.url}`;
     info.append(title, detail);
     const chip = document.createElement("span");
     chip.className = `state-chip${status.status === "connected" ? "" : " off"}`;
@@ -166,6 +259,7 @@ function renderServerList() {
     top.append(info, chip);
     const actions = document.createElement("div"); actions.className = "connection-actions";
     actions.append(actionButton(status.status === "connected" ? "切断" : "接続", () => toggleServer(item.name, status.status === "connected")));
+    actions.append(actionButton("診断", () => diagnoseServer(item.name)));
     actions.append(actionButton("編集", () => openServerForm(item)));
     actions.append(actionButton("削除", () => deleteServer(item.name), "mini-button danger-text"));
     card.append(top, actions);
@@ -178,29 +272,56 @@ function openServerForm(item = null) {
   $("#server-form").classList.remove("hidden");
   $("#server-original").value = item?.name || "";
   $("#server-name").value = item?.name || "";
+  $("#server-transport").value = item?.transport || "stdio";
   $("#server-command").value = item?.command || "";
   $("#server-args").value = item?.args.join("\n") || "";
   $("#server-cwd").value = item?.cwd || "";
+  $("#server-url").value = item?.url || "";
+  $("#server-auth").value = item?.auth_mode || "none";
+  $("#server-env").value = "";
+  $("#server-env").placeholder = item?.env_keys?.length ? `保存済みキー: ${item.env_keys.join(", ")}（空欄なら保持）` : "KEY=VALUE";
+  $("#server-headers").value = "";
+  $("#server-headers").placeholder = item?.header_keys?.length ? `保存済みキー: ${item.header_keys.join(", ")}（空欄なら保持）` : "Authorization=Bearer ...";
   $("#server-autostart").checked = Boolean(item?.autostart);
   $("#server-readonly").checked = Boolean(item?.read_only_auto);
   $("#server-name").focus();
 }
 
+function parsePairs(value) {
+  return Object.fromEntries(value.split(/\r?\n/).filter((line) => line.trim()).map((line) => {
+    const index = line.indexOf("=");
+    if (index < 1) throw new Error(`KEY=VALUE形式ではありません: ${line}`);
+    return [line.slice(0, index).trim(), line.slice(index + 1)];
+  }));
+}
+
 async function saveServer(event) {
   event.preventDefault();
   const original = $("#server-original").value;
-  const payload = {
-    name: $("#server-name").value.trim(),
-    command: $("#server-command").value.trim(),
-    args: $("#server-args").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
-    cwd: $("#server-cwd").value.trim() || null,
-    autostart: $("#server-autostart").checked,
-    read_only_auto: $("#server-readonly").checked,
-  };
   try {
+    const envText = $("#server-env").value;
+    const headerText = $("#server-headers").value;
+    const payload = {
+      name: $("#server-name").value.trim(), transport: $("#server-transport").value,
+      command: $("#server-command").value.trim(),
+      args: $("#server-args").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+      cwd: $("#server-cwd").value.trim() || null, url: $("#server-url").value.trim() || null,
+      auth_mode: $("#server-auth").value,
+      env: original && !envText.trim() ? null : parsePairs(envText),
+      headers: original && !headerText.trim() ? null : parsePairs(headerText),
+      autostart: $("#server-autostart").checked,
+      read_only_auto: $("#server-readonly").checked,
+    };
     state.settings = await api(original ? `mcp-servers/${encodeURIComponent(original)}` : "mcp-servers", { method: original ? "PUT" : "POST", body: JSON.stringify(payload) });
     $("#server-form").classList.add("hidden"); renderServerList(); await loadTools();
     toast("MCPサーバー設定を保存しました。");
+  } catch (error) { toast(error.message, true); }
+}
+
+async function diagnoseServer(name) {
+  try {
+    const result = await api(`mcp-servers/${encodeURIComponent(name)}/diagnostics`);
+    toast(`${name}: ${result.status.status} / ${result.transport}`);
   } catch (error) { toast(error.message, true); }
 }
 
@@ -226,7 +347,23 @@ async function loadTools() {
   $("#tool-count").textContent = String(state.tools.length);
   const list = $("#tool-list"); list.textContent = "";
   if (!state.tools.length) { list.innerHTML = '<p class="muted">MCPサーバーを接続すると表示されます。</p>'; return; }
-  for (const name of state.tools) { const pill = document.createElement("span"); pill.className = "tool-pill"; pill.textContent = name; pill.title = name; list.append(pill); }
+  const disabled = new Set(state.current?.state?.disabled_tools || []);
+  for (const name of state.tools) {
+    const label = document.createElement("label"); label.className = "tool-pill tool-toggle";
+    const check = document.createElement("input"); check.type = "checkbox"; check.checked = !disabled.has(name);
+    check.addEventListener("change", () => updateToolPreference(name, check.checked));
+    label.append(check, document.createTextNode(name)); label.title = name; list.append(label);
+  }
+}
+
+async function updateToolPreference(name, enabled) {
+  if (!state.current) { toast("先にチャットを作成してください。", true); await loadTools(); return; }
+  const disabled = new Set(state.current.state.disabled_tools || []);
+  if (enabled) disabled.delete(name); else disabled.add(name);
+  try {
+    state.current = await api(`sessions/${state.current.id}/tools`, { method: "PUT", body: JSON.stringify({ disabled_tools: [...disabled] }) });
+  } catch (error) { toast(error.message, true); }
+  await loadTools();
 }
 
 async function loadStatus() {
@@ -272,12 +409,12 @@ async function openSession(id) {
   state.current = await api(`sessions/${id}`);
   $("#welcome").classList.add("hidden"); $("#chat-workspace").classList.remove("hidden");
   $("#session-title").textContent = state.current.title;
-  renderSessionList(); renderMessages();
+  renderSessionList(); renderMessages(); renderContextUsage(); await loadTools();
 }
 
 async function deleteCurrentSession() {
   if (!state.current || !confirm(`「${state.current.title}」の会話とツール履歴を削除しますか？`)) return;
-  try { await api(`sessions/${state.current.id}`, { method: "DELETE" }); state.current = null; $("#chat-workspace").classList.add("hidden"); $("#welcome").classList.remove("hidden"); await loadSessions(); }
+  try { await api(`sessions/${state.current.id}`, { method: "DELETE" }); state.current = null; renderContextUsage(); $("#chat-workspace").classList.add("hidden"); $("#welcome").classList.remove("hidden"); await loadSessions(); }
   catch (error) { toast(error.message, true); }
 }
 
@@ -297,7 +434,13 @@ function renderMessage(item) {
   if (item.role !== "user") { const avatar = document.createElement("div"); avatar.className = "avatar"; avatar.textContent = item.role === "tool" ? "T" : "U"; article.append(avatar); }
   const bubble = document.createElement("div"); bubble.className = "bubble";
   if (item.role !== "user") { const meta = document.createElement("div"); meta.className = "message-meta"; meta.textContent = item.role === "tool" ? item.metadata.tool_name || "MCP TOOL" : "LOCAL ASSISTANT"; bubble.append(meta); }
-  const content = document.createElement("div"); content.className = "message-content"; content.textContent = item.content || (item.metadata.tool_calls ? "ツールの実行を準備しました。" : ""); bubble.append(content);
+  const content = document.createElement("div"); content.className = "message-content";
+  const text = item.content || (item.metadata.tool_calls ? "ツールの実行を準備しました。" : "");
+  if (item.role === "assistant" && window.GeneralMarkdown) content.innerHTML = window.GeneralMarkdown.renderMarkdown(text);
+  else content.textContent = text;
+  content.querySelectorAll?.(".copy-code").forEach((button) => button.addEventListener("click", () => navigator.clipboard.writeText(button.nextElementSibling.textContent)));
+  bubble.append(content);
+  if (item.role === "tool" && window.GeneralArtifacts) window.GeneralArtifacts.append(bubble, item);
   appendPcaPlot(bubble, item);
   appendEicPlot(bubble, item);
   article.append(bubble);
@@ -426,9 +569,10 @@ async function sendMessage(event) {
   setBusy(true, "モデルが考えています");
   state.controller = new AbortController();
   try {
-    const response = await fetch(`./api/sessions/${state.current.id}/chat/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message }), signal: state.controller.signal });
+    const response = await fetch(`./api/sessions/${state.current.id}/chat/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message, attachment_ids: state.attachments }), signal: state.controller.signal });
     if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+    let streaming = null; let streamedContent = "";
     while (true) {
       const { done, value } = await reader.read(); if (done) break;
       buffer += decoder.decode(value, { stream: true });
@@ -438,9 +582,31 @@ async function sendMessage(event) {
         if (!line) continue;
         const item = JSON.parse(line.slice(6));
         if (item.type === "status") $("#composer-status").textContent = item.status === "thinking" ? "モデルが考えています" : item.status;
+        if (item.type === "delta") {
+          streamedContent += item.content || "";
+          if (!streaming) {
+            streaming = renderMessage({ role: "assistant", content: "", metadata: {} });
+            streaming.classList.add("streaming"); $("#chat-messages").append(streaming);
+          }
+          const node = streaming.querySelector(".message-content");
+          if (window.GeneralMarkdown) node.innerHTML = window.GeneralMarkdown.renderMarkdown(streamedContent);
+          else node.textContent = streamedContent;
+          scrollConversationToEnd();
+        }
+        if (item.type === "tool_started") {
+          $("#composer-status").textContent = `${item.tool} を実行中`;
+          appendMessage({ role: "tool", content: `実行中: ${item.tool}\n${JSON.stringify(item.arguments || {}, null, 2)}`, metadata: { tool_name: item.tool } });
+        }
+        if (item.type === "tool_result") $("#composer-status").textContent = `${item.tool} が完了`;
+        if (item.type === "approval_required") $("#composer-status").textContent = "ツール実行の確認待ち";
+        if (item.context_usage && state.current) {
+          state.current.state.context_usage = item.context_usage;
+          renderContextUsage();
+        }
         if (item.type === "error") throw new Error(item.error);
       }
     }
+    state.attachments = []; renderAttachmentChips();
     await openSession(state.current.id); await loadSessions();
   } catch (error) {
     if (error.name === "AbortError") toast("応答を停止しました。"); else toast(error.message, true);
@@ -449,7 +615,94 @@ async function sendMessage(event) {
 
 function cancelChat() { state.controller?.abort(); }
 
+async function loadKnowledge(query = "") {
+  const result = await api(query ? `knowledge/search?q=${encodeURIComponent(query)}` : "knowledge");
+  state.knowledge = result.sources;
+  const list = $("#knowledge-list"); list.textContent = "";
+  if (!state.knowledge.length) { list.innerHTML = '<p class="muted">保存済み資料はありません。</p>'; return; }
+  for (const source of state.knowledge) {
+    const card = document.createElement("article"); card.className = "connection-card knowledge-card";
+    const check = document.createElement("input"); check.type = "checkbox"; check.checked = state.attachments.includes(source.id);
+    check.addEventListener("change", () => { if (check.checked) state.attachments.push(source.id); else state.attachments = state.attachments.filter((id) => id !== source.id); renderAttachmentChips(); });
+    const info = document.createElement("span"); info.textContent = `${source.name} · ${Math.ceil(source.size / 1024)}KB`;
+    const remove = actionButton("削除", () => deleteKnowledge(source.id), "mini-button danger-text");
+    card.append(check, info, remove); list.append(card);
+  }
+}
+
+function renderAttachmentChips() {
+  const area = $("#attachment-chips"); area.textContent = "";
+  for (const id of state.attachments) {
+    const source = state.knowledge.find((item) => item.id === id);
+    const chip = document.createElement("button"); chip.type = "button"; chip.className = "attachment-chip";
+    chip.textContent = `${source?.name || id} ×`; chip.addEventListener("click", () => { state.attachments = state.attachments.filter((value) => value !== id); renderAttachmentChips(); loadKnowledge($("#knowledge-search").value); });
+    area.append(chip);
+  }
+}
+
+async function uploadKnowledge(event) {
+  for (const file of event.target.files) {
+    if (file.size > 5 * 1024 * 1024) { toast(`${file.name} は5MBを超えています。`, true); continue; }
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = ""; for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    try { await api("knowledge", { method: "POST", body: JSON.stringify({ name: file.name, mime_type: file.type || "application/octet-stream", content_base64: btoa(binary) }) }); }
+    catch (error) { toast(error.message, true); }
+  }
+  event.target.value = ""; await loadKnowledge();
+}
+
+async function deleteKnowledge(id) {
+  if (!confirm("この資料をKnowledgeから削除しますか？")) return;
+  try { await api(`knowledge/${id}`, { method: "DELETE" }); state.attachments = state.attachments.filter((value) => value !== id); await loadKnowledge(); renderAttachmentChips(); }
+  catch (error) { toast(error.message, true); }
+}
+
+async function loadCapabilities() {
+  try {
+    const [resourceData, promptData] = await Promise.all([api("resources"), api("prompts")]);
+    renderCapabilities($("#resource-list"), resourceData.resources, "resource");
+    renderCapabilities($("#prompt-list"), promptData.prompts, "prompt");
+  } catch (error) { toast(error.message, true); }
+}
+
+function renderCapabilities(list, values, kind) {
+  list.textContent = "";
+  for (const item of values) {
+    const card = document.createElement("button"); card.type = "button"; card.className = "connection-card capability-card";
+    card.textContent = `${item.server} · ${item.name || item.uri || item.uriTemplate}`;
+    card.addEventListener("click", async () => {
+      try {
+        const result = kind === "resource" && item.uri
+          ? await api("resources/read", { method: "POST", body: JSON.stringify({ server: item.server, uri: item.uri }) })
+          : kind === "prompt" ? await api("prompts/get", { method: "POST", body: JSON.stringify({ server: item.server, name: item.name, arguments: {} }) }) : item;
+        $("#chat-input").value = JSON.stringify(result, null, 2);
+        toast("内容を入力欄へ展開しました。");
+      } catch (error) { toast(error.message, true); }
+    });
+    list.append(card);
+  }
+}
+
+async function importClaude() {
+  try {
+    const config = JSON.parse($("#claude-config").value);
+    const result = await api("mcp-servers/import-claude", { method: "POST", body: JSON.stringify({ config }) });
+    state.settings = result.settings; renderServerList(); toast(`${result.imported.length}件を取り込みました。`);
+  } catch (error) { toast(error.message, true); }
+}
+
+function applyServerPreset() {
+  const preset = $("#server-preset").value;
+  if (preset === "filesystem") { $("#server-name").value = "filesystem"; $("#server-command").value = "npx"; $("#server-args").value = "-y\n@modelcontextprotocol/server-filesystem\nC:\\Users"; }
+  if (preset === "github") { $("#server-name").value = "github"; $("#server-command").value = "npx"; $("#server-args").value = "-y\n@modelcontextprotocol/server-github"; $("#server-env").value = "GITHUB_PERSONAL_ACCESS_TOKEN="; }
+  if (preset === "http") { $("#server-transport").value = "streamable_http"; $("#server-url").focus(); }
+}
+
 function bindEvents() {
+  $("#setup-model").addEventListener("input", (event) => { event.target.dataset.touched = "true"; });
+  $("#setup-refresh").addEventListener("click", loadSetup);
+  $("#setup-pull-model").addEventListener("click", pullSetupModel);
+  $("#setup-complete").addEventListener("click", completeSetup);
   $("#new-session").addEventListener("click", () => createSession());
   $("#delete-session").addEventListener("click", deleteCurrentSession);
   $("#chat-form").addEventListener("submit", sendMessage);
@@ -462,6 +715,11 @@ function bindEvents() {
   $("#endpoint-form").addEventListener("submit", saveEndpoint);
   $("#add-server").addEventListener("click", () => openServerForm());
   $("#server-form").addEventListener("submit", saveServer);
+  $("#server-preset").addEventListener("change", applyServerPreset);
+  $("#knowledge-file").addEventListener("change", uploadKnowledge);
+  $("#knowledge-search").addEventListener("input", (event) => loadKnowledge(event.target.value));
+  $("#refresh-capabilities").addEventListener("click", loadCapabilities);
+  $("#import-claude").addEventListener("click", importClaude);
   document.querySelectorAll(".form-cancel").forEach((button) => button.addEventListener("click", () => button.closest("form").classList.add("hidden")));
   document.querySelectorAll(".starter").forEach((button) => button.addEventListener("click", async () => { $("#chat-input").value = button.dataset.prompt; $("#chat-form").requestSubmit(); }));
 }
@@ -469,7 +727,7 @@ function bindEvents() {
 async function initialize() {
   bindEvents();
   try {
-    await Promise.all([loadSettings(), loadSessions(), loadStatus()]);
+    await Promise.all([loadSetup(), loadSettings(), loadSessions(), loadStatus(), loadKnowledge(), loadCapabilities()]);
     if (state.sessions.length) await openSession(state.sessions[0].id);
   } catch (error) { toast(error.message, true); }
 }

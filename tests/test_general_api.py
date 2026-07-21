@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,6 +36,10 @@ class FakeOllama:
             "selected_model": "fake",
             "models": ["fake"],
         }
+
+    async def pull_model(self, model):
+        yield {"status": "pulling manifest"}
+        yield {"status": "success", "completed": 1, "total": 1}
 
 
 class FakeRegistry:
@@ -178,6 +183,62 @@ class GeneralApiTests(unittest.TestCase):
             deleted = client.delete("/api/mcp-servers/other")
             self.assertEqual(deleted.status_code, 200, deleted.text)
 
+    def test_first_run_setup_has_optional_mcp_and_persists_completion(self) -> None:
+        with TestClient(self.app) as client:
+            initial = client.get("/api/setup")
+            self.assertEqual(initial.status_code, 200, initial.text)
+            self.assertFalse(initial.json()["completed"])
+            self.assertTrue(initial.json()["mcp_optional"])
+            self.assertEqual(client.get("/api/settings").json()["mcp_servers"], [])
+
+            pulled = client.post("/api/setup/models/pull", json={"model": "fake"})
+            self.assertEqual(pulled.status_code, 200, pulled.text)
+            self.assertIn('"done": true', pulled.text)
+
+            completed = client.post("/api/setup/complete", json={"model": "fake"})
+            self.assertEqual(completed.status_code, 200, completed.text)
+            self.assertTrue(completed.json()["completed"])
+            self.assertTrue((self.store.base_directory / "setup.json").is_file())
+            self.assertTrue(client.get("/api/setup").json()["completed"])
+
+    def test_http_mcp_and_local_knowledge_attachment(self) -> None:
+        with TestClient(self.app) as client:
+            created = client.post(
+                "/api/mcp-servers",
+                json={
+                    "name": "remote",
+                    "transport": "streamable_http",
+                    "url": "https://example.invalid/mcp",
+                    "auth_mode": "oauth",
+                    "headers": {"X-Workspace": "local"},
+                },
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            server = next(
+                item for item in created.json()["mcp_servers"] if item["name"] == "remote"
+            )
+            self.assertEqual(server["transport"], "streamable_http")
+            self.assertEqual(server["header_keys"], ["X-Workspace"])
+
+            document = client.post(
+                "/api/knowledge",
+                json={
+                    "name": "notes.txt",
+                    "mime_type": "text/plain",
+                    "content_base64": base64.b64encode("局所知識です".encode()).decode(),
+                },
+            )
+            self.assertEqual(document.status_code, 201, document.text)
+            session = client.post("/api/sessions", json={"title": "knowledge"}).json()
+            answer = client.post(
+                f"/api/sessions/{session['id']}/chat",
+                json={"message": "資料を確認", "attachment_ids": [document.json()["id"]]},
+            )
+            self.assertEqual(answer.status_code, 200, answer.text)
+            stored = client.get(f"/api/sessions/{session['id']}").json()["messages"][0]
+            self.assertEqual(stored["metadata"]["attachment_ids"], [document.json()["id"]])
+            self.assertIn("局所知識です", stored["metadata"]["attachment_context"])
+
     def test_general_sessions_are_separate_and_plain_chat_works(self) -> None:
         self.store.create_session("analysis")
         with TestClient(self.app) as client:
@@ -197,6 +258,10 @@ class GeneralApiTests(unittest.TestCase):
             assistant("完了"),
         ]
         with TestClient(self.app) as client:
+            client.post(
+                "/api/mcp-servers",
+                json={"name": "ms-data-parser", "command": "python", "args": ["server.py"]},
+            )
             client.post("/api/mcp-servers/ms-data-parser/connect")
             session = client.post("/api/sessions", json={"title": "chat"}).json()
             pending = client.post(

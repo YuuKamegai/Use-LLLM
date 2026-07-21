@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-DEFAULT_MCP_COMMAND = Path(r"C:\Python314\python.exe")
-DEFAULT_MCP_SERVER_SCRIPT = Path(r"C:\Users\yuu18\Lipidmix_with_LLM\server.py")
+DEFAULT_MCP_COMMAND = Path(sys.executable)
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "qwen3:14b"
 
@@ -36,12 +36,15 @@ class MCPServerConfig:
 
     @classmethod
     def from_env(cls) -> "MCPServerConfig":
+        server_script_text = os.environ.get("USE_LLLM_MCP_SERVER_SCRIPT", "").strip()
+        if not server_script_text:
+            raise ConfigurationError(
+                "MCPサーバーが未設定です。USE_LLLM_MCP_SERVER_SCRIPTを指定してください"
+            )
         command = Path(
             os.environ.get("USE_LLLM_MCP_COMMAND", str(DEFAULT_MCP_COMMAND))
         ).expanduser()
-        server_script = Path(
-            os.environ.get("USE_LLLM_MCP_SERVER_SCRIPT", str(DEFAULT_MCP_SERVER_SCRIPT))
-        ).expanduser()
+        server_script = Path(server_script_text).expanduser()
         timeout_text = os.environ.get("USE_LLLM_MCP_STARTUP_TIMEOUT", "30")
         try:
             timeout = float(timeout_text)

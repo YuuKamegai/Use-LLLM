@@ -32,6 +32,15 @@ class FakeSummarizer:
         )
 
 
+class LateLoadedSummarizer(FakeSummarizer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.loaded = False
+
+    async def context_window(self):
+        return 8192 if self.loaded else None
+
+
 class ContextMemoryTests(unittest.IsolatedAsyncioTestCase):
     def test_markdown_fenced_summary_is_normalized(self) -> None:
         parsed = parse_summary_json('```json\n{"summary":"ARFを読み込み、PCAを続行する。"}\n```')
@@ -98,6 +107,56 @@ class ContextMemoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("MCPツール実行台帳", encoded)
             self.assertIn("tool result compacted", encoded)
             self.assertLess(len(encoded), len(raw_result))
+
+    async def test_context_usage_combines_ollama_prompt_count_with_response_estimate(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = SessionStore(Path(raw) / "state")
+            session = store.create_session("chat", surface="general")
+            store.add_message(session["id"], "user", "現在の残量を確認")
+            memory = ContextMemoryManager(FakeSummarizer(), store, context_window=4096)
+            assembled = await memory.assemble(
+                session["id"],
+                "system",
+                [{"type": "function", "function": {"name": "srv::peek"}}],
+            )
+
+            usage = await memory.context_usage(
+                assembled,
+                model="fake",
+                response_content="確認しました。",
+                response_metadata={"step": 1},
+                prompt_eval_count=600,
+            )
+
+            self.assertEqual(assembled.context_window, 4096)
+            self.assertEqual(assembled.input_budget, int(4096 * 0.65))
+            self.assertGreater(assembled.tool_tokens, 0)
+            self.assertEqual(usage["prompt_tokens"], 600)
+            self.assertGreater(usage["used_tokens"], 600)
+            self.assertEqual(usage["accuracy"], "estimated")
+            self.assertEqual(usage["measurement_source"], "ollama_prompt_plus_response_estimate")
+
+    async def test_context_window_is_retried_after_model_load(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = SessionStore(Path(raw) / "state")
+            session = store.create_session("chat", surface="general")
+            store.add_message(session["id"], "user", "モデルをロード")
+            ollama = LateLoadedSummarizer()
+            memory = ContextMemoryManager(ollama, store)
+
+            assembled = await memory.assemble(session["id"], "system", [])
+            self.assertEqual(assembled.context_window, 32768)
+            ollama.loaded = True
+
+            usage = await memory.context_usage(
+                assembled,
+                model="fake",
+                response_content="ロード完了",
+                prompt_eval_count=120,
+            )
+
+            self.assertEqual(usage["context_window"], 8192)
+            self.assertEqual(usage["context_window_source"], "ollama")
 
 
 if __name__ == "__main__":

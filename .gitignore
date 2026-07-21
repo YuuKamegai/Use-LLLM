@@ -7,3 +7,7 @@ __pycache__/
 launcher/**/bin/
 launcher/**/obj/
 launcher/**/publish/
+installer/**/bin/
+installer/**/obj/
+build/
+dist/

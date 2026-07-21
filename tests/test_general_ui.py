@@ -29,6 +29,9 @@ class GeneralUiContractTests(unittest.TestCase):
             "endpoint-form",
             "server-form",
             "tool-list",
+            "context-meter",
+            "context-meter-label",
+            "context-meter-fill",
         ):
             self.assertIn(f'id="{element_id}"', html)
         self.assertIn("resolveApproval", script)
@@ -43,6 +46,14 @@ class GeneralUiContractTests(unittest.TestCase):
         self.assertIn("appendPcaPlot", script)
         self.assertIn("appendEicPlot", script)
         self.assertIn("function appendMessage(item)", script)
+        self.assertIn("function renderContextUsage()", script)
+        self.assertIn("残りコンテキスト", script)
+        self.assertIn('meter.classList.add("critical")', script)
+        self.assertIn(".context-meter.warning", styles)
+        self.assertIn(".context-meter.critical", styles)
+        self.assertIn('id="setup-overlay"', html)
+        self.assertIn("async function pullSetupModel()", script)
+        self.assertIn('api("setup/complete"', script)
         self.assertIn('const workspace = $("#chat-workspace")', script)
         self.assertIn("workspace.scrollTop = workspace.scrollHeight", script)
         self.assertIn("grid-template-rows: minmax(0, 1fr) auto", styles)
@@ -126,9 +137,13 @@ class GeneralUiContractTests(unittest.TestCase):
         self.assertIn('$SourceRoot = Join-Path $ProjectRoot "src"', launcher)
         self.assertIn("$env:PYTHONPATH", launcher)
         self.assertNotIn("--surface", launcher)
-        self.assertIn("http://127.0.0.1:8765/general/", exe_source)
+        self.assertNotIn("127.0.0.1:8765", exe_source)
+        self.assertIn("SelectAvailablePort()", exe_source)
+        self.assertIn('start.ArgumentList.Add("-Port")', exe_source)
+        self.assertIn('start.ArgumentList.Add("-NoBrowser")', exe_source)
+        self.assertIn("$env:USE_LLLM_WEB_PORT = [string]$Port", launcher)
         self.assertIn("api/launcher-health", exe_source)
-        self.assertIn('GetProperty("static_ready"', exe_source)
+        self.assertIn('TryGetProperty("static_ready"', exe_source)
         self.assertIn("ServerState.Incompatible", exe_source)
         self.assertNotIn('Add("general")', exe_source)
         self.assertIn("dotnet publish", build_script)

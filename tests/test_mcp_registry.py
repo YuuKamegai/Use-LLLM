@@ -5,9 +5,10 @@ import unittest
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from use_lllm.core.mcp_client import MCPConnectionError
-from use_lllm.core.mcp_registry import MCPRegistry
+from use_lllm.core.mcp_registry import MCPRegistry, _oauth_provider
 from use_lllm.core.policy import ToolPolicyError
 from use_lllm.core.settings_store import MCPServerSpec
 
@@ -214,6 +215,23 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
                 [MCPServerSpec("same", "a"), MCPServerSpec("same", "b")],
                 session_factory=self.factory,
             )
+
+    def test_oauth_redirect_uses_runtime_webui_port(self) -> None:
+        spec = MCPServerSpec(
+            "remote",
+            transport="streamable_http",
+            url="https://example.invalid/mcp",
+            auth_mode="oauth",
+        )
+        with patch.dict("os.environ", {"USE_LLLM_WEB_PORT": "54321"}):
+            provider = _oauth_provider(spec)
+
+        self.assertIsNotNone(provider)
+        redirect = str(provider.context.client_metadata.redirect_uris[0])
+        self.assertEqual(
+            redirect,
+            "http://127.0.0.1:54321/general/api/mcp-oauth/callback",
+        )
 
 
 if __name__ == "__main__":

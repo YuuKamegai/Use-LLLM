@@ -8,8 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from use_lllm.core.config import (
-    DEFAULT_MCP_COMMAND,
-    DEFAULT_MCP_SERVER_SCRIPT,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_URL,
     ConfigurationError,
@@ -22,21 +20,35 @@ MS_DATA_PARSER = "ms-data-parser"
 @dataclass(frozen=True, slots=True)
 class MCPServerSpec:
     name: str
-    command: str
+    command: str = ""
     args: tuple[str, ...] = ()
     cwd: str | None = None
     env: tuple[tuple[str, str], ...] = ()
     autostart: bool = False
     read_only_auto: bool = False
+    transport: str = "stdio"
+    url: str | None = None
+    headers: tuple[tuple[str, str], ...] = ()
+    auth_mode: str = "none"
 
     def validate(self) -> None:
         if not self.name.strip():
             raise ConfigurationError("MCPサーバー名が空です。")
-        if not self.command.strip():
+        if self.transport not in {"stdio", "streamable_http", "sse"}:
+            raise ConfigurationError(f"未対応のMCP transportです: {self.transport}")
+        if self.transport == "stdio" and not self.command.strip():
             raise ConfigurationError(f"MCPサーバー {self.name} のcommandが空です。")
+        if self.transport != "stdio":
+            if not (self.url or "").strip().lower().startswith(("http://", "https://")):
+                raise ConfigurationError(f"MCPサーバー {self.name} のURLが不正です。")
+        if self.auth_mode not in {"none", "oauth"}:
+            raise ConfigurationError(f"未対応のMCP認証方式です: {self.auth_mode}")
 
     def env_dict(self) -> dict[str, str]:
         return {key: value for key, value in self.env}
+
+    def headers_dict(self) -> dict[str, str]:
+        return {key: value for key, value in self.headers}
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,15 +65,7 @@ def default_settings() -> Settings:
         trust=TRUST_LOOPBACK,
         default_model=DEFAULT_OLLAMA_MODEL,
     )
-    ms = MCPServerSpec(
-        name=MS_DATA_PARSER,
-        command=str(DEFAULT_MCP_COMMAND),
-        args=(str(DEFAULT_MCP_SERVER_SCRIPT),),
-        cwd=str(DEFAULT_MCP_SERVER_SCRIPT.parent),
-        autostart=False,
-        read_only_auto=True,
-    )
-    return Settings(endpoints=(local,), selected_endpoint="local", mcp_servers=(ms,))
+    return Settings(endpoints=(local,), selected_endpoint="local", mcp_servers=())
 
 
 def _endpoint_to_json(endpoint: Endpoint) -> dict[str, Any]:
@@ -91,18 +95,26 @@ def _server_to_json(spec: MCPServerSpec) -> dict[str, Any]:
         "env": [list(pair) for pair in spec.env],
         "autostart": spec.autostart,
         "read_only_auto": spec.read_only_auto,
+        "transport": spec.transport,
+        "url": spec.url,
+        "headers": [list(pair) for pair in spec.headers],
+        "auth_mode": spec.auth_mode,
     }
 
 
 def _server_from_json(data: dict[str, Any]) -> MCPServerSpec:
     return MCPServerSpec(
         name=str(data["name"]),
-        command=str(data["command"]),
+        command=str(data.get("command", "")),
         args=tuple(str(item) for item in data.get("args", [])),
         cwd=data.get("cwd"),
         env=tuple((str(k), str(v)) for k, v in data.get("env", [])),
         autostart=bool(data.get("autostart", False)),
         read_only_auto=bool(data.get("read_only_auto", False)),
+        transport=str(data.get("transport", "stdio")),
+        url=data.get("url"),
+        headers=tuple((str(k), str(v)) for k, v in data.get("headers", [])),
+        auth_mode=str(data.get("auth_mode", "none")),
     )
 
 

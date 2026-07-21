@@ -1,71 +1,78 @@
-# Use-LLLM WebUI（汎用チャット）
+# Use-LLLM
 
-ローカル Ollama と `ms-data-parser` MCP を対象にした loopback 限定の汎用チャット WebUI。
-`Lipidmix_with_LLM/server.py` を既定 MCP サーバとして起動する。
+OllamaのローカルLLMを、Claude Desktopのような会話UIから利用するWindows向けアプリです。
+会話と設定はローカルへ保存され、必要なMCPサーバーだけを後から接続できます。
 
-## 起動
+## Windowsへインストール
 
-```powershell
-cd C:\Users\yuu18\Use-LLLM
-.\Start-WebUI.ps1            # http://127.0.0.1:8765/general/ を開く
-.\Start-WebUI.ps1 -NoBrowser # ブラウザを開かず起動
-```
+`dist\Use-LLLM-Setup.exe`を実行します。Python、uv、.NET Runtimeの事前導入は不要です。
 
-または直接:
+- Windows 10/11 x64
+- ユーザー単位で`%LOCALAPPDATA%\Programs\Use-LLLM`へインストール
+- 会話、Knowledge、設定は`%LOCALAPPDATA%\Use-LLLM`へ保存
+- アンインストールしてもローカルデータは既定で保持
 
-```powershell
-cd C:\Users\yuu18\Use-LLLM
-$env:PYTHONPATH = "src"
-python -m use_lllm serve --open
-```
+初回起動時にOllamaを診断します。未導入の場合は公式Windowsインストーラーへの
+リンクを表示し、Ollama起動後に会話モデルを選択または取得します。Ollama本体と
+モデルはUse-LLLMインストーラーには含まれません。
 
-GUI ランチャ（`Use-LLLM-WebUI.exe`）は `Start-WebUI.ps1` を起動して同 URL を開く。
-再ビルド: `.\Build-WebUI-Launcher.ps1`（.NET 10 SDK 必要）。
-同梱の `Use-LLLM-WebUI.exe` は framework-dependent ビルドのため、実行には .NET 10 Desktop Runtime のインストールが必要（SDK は再ビルド時のみ必要）。
+MCPサーバーは任意です。初期状態では何も登録せず、「接続と設定」からstdio、
+Streamable HTTP、SSEサーバーを追加するか、Claude Desktop設定JSONを取り込みます。
 
-## 開発環境
+## インストーラーをビルド
 
-開発依存を含む仮想環境を `uv` で同期する。
+開発PCには`uv`、.NET 10 SDK、Node.jsが必要です。PyInstallerはビルド時だけ`uv`が
+隔離環境へ取得します。
 
 ```powershell
-cd C:\Users\yuu18\Use-LLLM
 uv sync --dev
+.\Build-Windows-Installer.ps1
 ```
+
+ビルドはpytest、Ruff、JavaScript構文検査を実行し、次を生成します。
+
+```text
+dist\Use-LLLM-Setup.exe
+```
+
+生成物は、Python 3.12アプリランタイムとself-contained .NETランチャーを内包する
+ユーザー単位インストーラーです。配布前のコード署名は別途必要です。
+
+## 開発用起動
+
+```powershell
+uv sync --dev
+.\Start-WebUI.ps1
+.\Start-WebUI.ps1 -NoBrowser
+```
+
+または直接起動します。
+
+```powershell
+$env:PYTHONPATH = "src"
+uv run python -m use_lllm serve --open
+```
+
+GUIランチャーだけを再ビルドする場合は`Build-WebUI-Launcher.ps1`を使用します。
 
 ## 品質チェック
 
 ```powershell
-uv run ruff check .
-uv run ruff format --check .
-```
-
-Ruff の安全な自動修正とフォーマットを適用する場合:
-
-```powershell
-uv run ruff check . --fix
-uv run ruff format .
-```
-
-## テスト
-
-```powershell
-cd C:\Users\yuu18\Use-LLLM
-uv run pytest tests -v
+uv run pytest -q
+uv run ruff check src tests
+node --check src/use_lllm/general/static/app.js
+node tests/test_general_markdown.cjs
+python -m compileall -q src
+git diff --check
 ```
 
 ## 構成
 
-- `src/use_lllm/general/` … 汎用チャット本体（API・エージェントループ・静的 UI）
-- `src/use_lllm/core/` … 共有基盤（設定・MCP・ポリシー・セッション）
-- `src/use_lllm/app.py` … `/general` に汎用をマウントする単体アプリ
-- 実行時データは `%LOCALAPPDATA%/Use-LLLM/`（sqlite・settings.json・sessions）
-- 起動スクリプトとEXEは、このリポジトリ直下の `src` と `Start-WebUI.ps1` を解決し、移行前の配置には依存しない。
-- 既定の `ms-data-parser` MCPだけは、移動対象外の `C:\Users\yuu18\Lipidmix_with_LLM\server.py` を意図的に使用する。`USE_LLLM_MCP_SERVER_SCRIPT` で上書きできる。
+- `src/use_lllm/general/`：チャットAPI、エージェントループ、WebUI
+- `src/use_lllm/core/`：設定、Ollama、MCP、セッション、初回セットアップ
+- `launcher/`：開発・インストール共用GUIランチャー
+- `installer/`：ユーザー単位Windowsインストーラー
+- `Build-Windows-Installer.ps1`：self-contained配布物の再現可能ビルド
 
-## EICプロット
-
-`ms-data-parser::eicaef_plot_chromatograms` が返す
-`plot_schema="lipidmix.eic.v1"` の構造化プロット情報は、チャット内でPlotlyの
-インタラクティブな線グラフとして描画する。情報取得はread-onlyで、画像ファイルは
-生成しない。PNG保存はユーザーが明示した場合だけ
-`ms-data-parser::save_eic_figure` を呼び、ローカル書き込みとして承認を要求する。
+Knowledgeは現在、選択資料を会話へ手動添付するローカル機能です。引用付きRAG、
+埋め込み検索、PDF/Office抽出は後続実装です。

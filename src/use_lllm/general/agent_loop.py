@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, AsyncIterator, Protocol
 
 from use_lllm.core.audit import AuditLogger
-from use_lllm.core.context_memory import ContextMemoryManager
+from use_lllm.core.context_memory import ContextAssembly, ContextMemoryManager
 from use_lllm.core.mcp_client import MCPToolResult
 from use_lllm.core.mcp_registry import MCPRegistry
 from use_lllm.core.mcp_state_policy import (
@@ -27,7 +28,7 @@ MCPツール名は server::tool 形式です。ユーザーがtool部分だけ�
 
 class RegistryLike(Protocol):
     def ollama_tools(
-        self, query: str | None = None, *, limit: int = 12
+        self, query: str | None = None, *, limit: int = 24, excluded: set[str] | None = None
     ) -> list[dict[str, Any]]: ...
 
     def decide(
@@ -77,7 +78,7 @@ class GeneralAgentLoop:
 
     async def _ollama_messages(
         self, session_id: str, tools: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    ) -> ContextAssembly:
         tool_names = [
             str(item.get("function", {}).get("name", ""))
             for item in tools
@@ -88,8 +89,27 @@ class GeneralAgentLoop:
             if tool_names
             else "\n現在接続中のMCPツールはありません。"
         )
-        assembled = await self.memory.assemble(session_id, SYSTEM_PROMPT + catalog, tools)
-        return assembled.messages
+        return await self.memory.assemble(session_id, SYSTEM_PROMPT + catalog, tools)
+
+    async def _record_context_usage(
+        self,
+        session_id: str,
+        assembled: ContextAssembly,
+        *,
+        model: str,
+        content: str,
+        metadata: dict[str, Any],
+        prompt_eval_count: int | None = None,
+    ) -> dict[str, Any]:
+        usage = await self.memory.context_usage(
+            assembled,
+            model=model,
+            response_content=content,
+            response_metadata=metadata,
+            prompt_eval_count=prompt_eval_count,
+        )
+        self.sessions.update_session(session_id, state_patch={"context_usage": usage})
+        return usage
 
     @staticmethod
     def _parse_tool_call(call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -185,7 +205,12 @@ class GeneralAgentLoop:
                     session_id,
                     "tool",
                     content,
-                    {"tool_name": qualified_name, "is_error": result.is_error},
+                    {
+                        "tool_name": qualified_name,
+                        "is_error": result.is_error,
+                        "content_blocks": list(result.content),
+                        "structured_content": result.structured_content,
+                    },
                 )
             self.sessions.complete_tool_invocation(
                 invocation_id,
@@ -264,21 +289,255 @@ class GeneralAgentLoop:
         generations[server_name] = generation
         self.sessions.update_session(session_id, state_patch={"mcp_generations": generations})
 
-    async def chat(self, session_id: str, message: str) -> dict[str, Any]:
+    async def chat(
+        self, session_id: str, message: str, *, metadata: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         session = self._general_session(session_id)
         if session["state"].get("pending_approval") is not None:
             raise ValueError("承認待ちのツール呼び出しを先に解決してください。")
         text = message.strip()
         if not text:
             raise ValueError("メッセージが空です。")
-        self.sessions.add_message(session_id, "user", text)
+        self.sessions.add_message(session_id, "user", text, metadata)
         self.sessions.update_session(session_id, status="running")
-        return await self._drive(session_id)
+        try:
+            return await self._drive(session_id)
+        except asyncio.CancelledError:
+            self.sessions.update_session(session_id, status="ready")
+            raise
+        except Exception as exc:
+            self.sessions.update_session(session_id, status="error")
+            self.sessions.append_event(
+                session_id,
+                "general_chat_failed",
+                {"error": str(exc)},
+                status="failed",
+            )
+            raise
 
-    async def chat_stream(self, session_id: str, message: str) -> AsyncIterator[dict[str, Any]]:
+    async def chat_stream(
+        self, session_id: str, message: str, *, metadata: dict[str, Any] | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        session = self._general_session(session_id)
+        if session["state"].get("pending_approval") is not None:
+            raise ValueError("承認待ちのツール呼び出しを先に解決してください。")
+        text = message.strip()
+        if not text:
+            raise ValueError("メッセージが空です。")
+        self.sessions.add_message(session_id, "user", text, metadata)
+        self.sessions.update_session(session_id, status="running")
         yield {"type": "status", "status": "thinking"}
-        result = await self.chat(session_id, message)
-        yield {"type": result["status"], **result}
+        try:
+            streamer = getattr(self.ollama, "stream_chat", None)
+            if streamer is None:
+                result = await self._drive(session_id)
+                yield {"type": result["status"], **result}
+                return
+            async for item in self._drive_stream(session_id):
+                yield item
+        except asyncio.CancelledError:
+            self.sessions.update_session(session_id, status="ready")
+            self.sessions.append_event(
+                session_id,
+                "general_chat_cancelled",
+                {},
+                status="cancelled",
+            )
+            raise
+        except Exception as exc:
+            self.sessions.update_session(session_id, status="error")
+            self.sessions.append_event(
+                session_id,
+                "general_chat_failed",
+                {"error": str(exc)},
+                status="failed",
+            )
+            raise
+
+    async def _drive_stream(self, session_id: str) -> AsyncIterator[dict[str, Any]]:
+        """Run the tool loop while forwarding model and tool progress to the WebUI."""
+
+        network_mode = str(
+            self._general_session(session_id)["state"].get("network_mode", "offline")
+        )
+        user_messages = [
+            item["content"]
+            for item in self.sessions.list_messages(session_id)
+            if item["role"] == "user"
+        ]
+        query = user_messages[-1] if user_messages else ""
+        excluded = set(self._general_session(session_id)["state"].get("disabled_tools", []))
+        tools = (
+            self.registry.ollama_tools(query=query, excluded=excluded)
+            if excluded
+            else self.registry.ollama_tools(query=query)
+        )
+        for step in range(1, self.max_steps + 1):
+            content_parts: list[str] = []
+            tool_calls: list[dict[str, Any]] = []
+            seen_calls: set[str] = set()
+            model = "unknown"
+            prompt_eval_count: int | None = None
+            eval_count: int | None = None
+            assembled = await self._ollama_messages(session_id, tools)
+            async for chunk in self.ollama.stream_chat(
+                assembled.messages,
+                tools=tools,
+                temperature=0.2,
+            ):
+                model = str(chunk.get("model") or model)
+                if isinstance(chunk.get("prompt_eval_count"), int):
+                    prompt_eval_count = int(chunk["prompt_eval_count"])
+                if isinstance(chunk.get("eval_count"), int):
+                    eval_count = int(chunk["eval_count"])
+                chunk_message = chunk.get("message") or {}
+                if not isinstance(chunk_message, dict):
+                    continue
+                delta = str(chunk_message.get("content") or "")
+                if delta:
+                    content_parts.append(delta)
+                    yield {"type": "delta", "content": delta, "step": step}
+                calls = chunk_message.get("tool_calls") or []
+                if isinstance(calls, list):
+                    for call in calls:
+                        if not isinstance(call, dict):
+                            continue
+                        key = json.dumps(call, ensure_ascii=False, sort_keys=True)
+                        if key not in seen_calls:
+                            seen_calls.add(key)
+                            tool_calls.append(call)
+
+            content = "".join(content_parts).strip()
+            response_metadata: dict[str, Any] = {"model": model, "step": step}
+            if prompt_eval_count is not None:
+                response_metadata["prompt_eval_count"] = prompt_eval_count
+            if eval_count is not None:
+                response_metadata["eval_count"] = eval_count
+            if not tool_calls:
+                self.sessions.add_message(
+                    session_id,
+                    "assistant",
+                    content,
+                    response_metadata,
+                )
+                context_usage = await self._record_context_usage(
+                    session_id,
+                    assembled,
+                    model=model,
+                    content=content,
+                    metadata=response_metadata,
+                    prompt_eval_count=prompt_eval_count,
+                )
+                self.sessions.update_session(session_id, status="ready")
+                yield {
+                    "type": "complete",
+                    "status": "complete",
+                    "content": content,
+                    "model": model,
+                    "step": step,
+                    "context_usage": context_usage,
+                }
+                return
+
+            call = tool_calls[0]
+            qualified_name, arguments = self._parse_tool_call(call)
+            self.sessions.add_message(
+                session_id,
+                "assistant",
+                content,
+                {**response_metadata, "tool_calls": [call]},
+            )
+            await self._record_context_usage(
+                session_id,
+                assembled,
+                model=model,
+                content=content,
+                metadata={**response_metadata, "tool_calls": [call]},
+                prompt_eval_count=prompt_eval_count,
+            )
+            decision = self.registry.decide(qualified_name, network_mode=network_mode)
+            decision_event = self.audit.record_tool_decision(
+                session_id, qualified_name, arguments, decision
+            )
+            if not decision.allowed:
+                event_id = self.sessions.append_event(
+                    session_id,
+                    "general_tool_approval",
+                    {
+                        "qualified_name": qualified_name,
+                        "arguments": arguments,
+                        "decision": decision.to_dict(),
+                        "step": step,
+                    },
+                    status="pending",
+                    parent_event_id=decision_event,
+                )
+                self.sessions.update_session(
+                    session_id,
+                    status="awaiting_approval",
+                    state_patch={"pending_approval": event_id},
+                )
+                yield {
+                    "type": "approval_required",
+                    "status": "approval_required",
+                    "approval": {
+                        "event_id": event_id,
+                        "qualified_name": qualified_name,
+                        "arguments": arguments,
+                        "reason": decision.reason,
+                    },
+                }
+                return
+
+            yield {
+                "type": "tool_started",
+                "tool": qualified_name,
+                "arguments": arguments,
+                "step": step,
+            }
+            state_ready = await self._restore_mcp_state(
+                session_id, qualified_name, network_mode=network_mode
+            )
+            result = await self._call_and_record(
+                session_id,
+                qualified_name,
+                arguments,
+                approved=False,
+                network_mode=network_mode,
+            )
+            self.audit.record_tool_result(
+                session_id,
+                qualified_name,
+                is_error=result.is_error,
+                content_blocks=len(result.content),
+                has_structured_content=result.structured_content is not None,
+                parent_event_id=decision_event,
+            )
+            if not result.is_error and (state_ready or not rule_for(qualified_name).requires):
+                generation = await self._ensure_registry_session(
+                    session_id, self._server_name(qualified_name)
+                )
+                self._mark_mcp_state_live(session_id, qualified_name, generation)
+            yield {
+                "type": "tool_result",
+                "tool": qualified_name,
+                "is_error": result.is_error,
+                "step": step,
+            }
+
+        self.sessions.append_event(
+            session_id,
+            "general_step_limit",
+            {"max_steps": self.max_steps},
+            status="failed",
+        )
+        self.sessions.update_session(session_id, status="paused")
+        yield {
+            "type": "step_limit",
+            "status": "step_limit",
+            "content": "ツール実行の段階上限に達したため停止しました。",
+            "step": self.max_steps,
+        }
 
     async def _drive(self, session_id: str) -> dict[str, Any]:
         network_mode = str(
@@ -290,24 +549,48 @@ class GeneralAgentLoop:
             if item["role"] == "user"
         ]
         query = user_messages[-1] if user_messages else ""
-        tools = self.registry.ollama_tools(query=query)
+        excluded = set(self._general_session(session_id)["state"].get("disabled_tools", []))
+        tools = (
+            self.registry.ollama_tools(query=query, excluded=excluded)
+            if excluded
+            else self.registry.ollama_tools(query=query)
+        )
         for step in range(1, self.max_steps + 1):
+            assembled = await self._ollama_messages(session_id, tools)
             response = await self.ollama.chat(
-                await self._ollama_messages(session_id, tools),
+                assembled.messages,
                 tools=tools,
                 temperature=0.2,
             )
             calls = response.tool_calls
+            response_metadata: dict[str, Any] = {"model": response.model, "step": step}
+            if response.prompt_eval_count is not None:
+                response_metadata["prompt_eval_count"] = response.prompt_eval_count
+            if response.eval_count is not None:
+                response_metadata["eval_count"] = response.eval_count
             if not calls:
                 content = response.content.strip()
                 self.sessions.add_message(
                     session_id,
                     "assistant",
                     content,
-                    {"model": response.model, "step": step},
+                    response_metadata,
+                )
+                context_usage = await self._record_context_usage(
+                    session_id,
+                    assembled,
+                    model=response.model,
+                    content=content,
+                    metadata=response_metadata,
+                    prompt_eval_count=response.prompt_eval_count,
                 )
                 self.sessions.update_session(session_id, status="ready")
-                return {"status": "complete", "content": content, "step": step}
+                return {
+                    "status": "complete",
+                    "content": content,
+                    "step": step,
+                    "context_usage": context_usage,
+                }
 
             call = calls[0]
             qualified_name, arguments = self._parse_tool_call(call)
@@ -316,10 +599,17 @@ class GeneralAgentLoop:
                 "assistant",
                 response.content,
                 {
-                    "model": response.model,
-                    "step": step,
+                    **response_metadata,
                     "tool_calls": [call],
                 },
+            )
+            await self._record_context_usage(
+                session_id,
+                assembled,
+                model=response.model,
+                content=response.content,
+                metadata={**response_metadata, "tool_calls": [call]},
+                prompt_eval_count=response.prompt_eval_count,
             )
             decision = self.registry.decide(qualified_name, network_mode=network_mode)
             decision_event = self.audit.record_tool_decision(

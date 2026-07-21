@@ -10,6 +10,11 @@ from use_lllm.core.config import ConfigurationError, MCPServerConfig, OllamaConf
 
 
 class MCPServerConfigTests(unittest.TestCase):
+    def test_from_env_requires_explicit_server_script(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ConfigurationError, "未設定"):
+                MCPServerConfig.from_env()
+
     def test_default_ollama_is_loopback_and_quality_selected_model(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             config = OllamaConfig.from_env()

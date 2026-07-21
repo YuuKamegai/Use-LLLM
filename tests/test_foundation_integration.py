@@ -7,7 +7,7 @@ from pathlib import Path
 from use_lllm.core.endpoints import TRUST_LAN_ALLOWED, Endpoint, EndpointRegistry
 from use_lllm.core.policy import decide_server_tool
 from use_lllm.core.settings_store import (
-    MS_DATA_PARSER,
+    MCPServerSpec,
     default_settings,
     load_settings,
     save_settings,
@@ -45,9 +45,7 @@ class FoundationIntegrationTests(unittest.TestCase):
         config.validate()
 
     def test_ms_data_parser_read_only_auto_flows_into_policy(self) -> None:
-        spec = next(
-            server for server in default_settings().mcp_servers if server.name == MS_DATA_PARSER
-        )
+        spec = MCPServerSpec(name="ms-data-parser", command="python", read_only_auto=True)
         decision = decide_server_tool(spec.name, "arf_parser", read_only_auto=spec.read_only_auto)
         self.assertTrue(decision.allowed)
         self.assertFalse(decision.approval_required)

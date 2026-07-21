@@ -6,8 +6,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Python = if (Test-Path -LiteralPath "C:\Python314\python.exe") {
-    "C:\Python314\python.exe"
+$VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+$Python = if (Test-Path -LiteralPath $VenvPython) {
+    $VenvPython
 } else {
     (Get-Command python -ErrorAction Stop).Source
 }
@@ -19,6 +20,7 @@ $env:PYTHONPATH = if ([string]::IsNullOrWhiteSpace($env:PYTHONPATH)) {
 } else {
     $SourceRoot + [IO.Path]::PathSeparator + $env:PYTHONPATH
 }
+$env:USE_LLLM_WEB_PORT = [string]$Port
 $arguments = @("-m", "use_lllm", "serve", "--host", "127.0.0.1", "--port", $Port)
 if (-not $NoBrowser) {
     $arguments += "--open"
