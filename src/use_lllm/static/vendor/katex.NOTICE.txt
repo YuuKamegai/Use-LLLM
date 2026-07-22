@@ -1,0 +1,8 @@
+KaTeX 0.18.1
+
+Source: https://www.npmjs.com/package/katex/v/0.18.1
+Package integrity: sha512-Td8GCYSxDAoMhHOlKmCFMJ/hz5qlAAb71n66Dryw9nfCVfumLo7nhuotbvKom/XPADmrYC3O5QR71EPq4DarJQ==
+License: MIT (see katex.LICENSE.txt)
+
+Vendored files are copied from the official npm package: dist/katex.min.js,
+dist/katex.min.css, and dist/fonts/*.woff2.

@@ -115,3 +115,25 @@ Claude DesktopのようにローカルLLMと会話でき、GUIだけでMCPと知
 - 実Ollama/browser smoke: qwen3:14b、割当4.10k、実用入力予算2.66k、残量93%を表示
 - Windowsインストーラ再ビルド: ペイロードとインストール済みランタイムに`context-meter`／`context_usage`を確認
 - quiet install/runtime HTTP smoke/quiet uninstall: 成功、検証前の未登録状態へ復元
+
+## 数式表示と新規チャット名（2026-07-22）
+
+- [x] KaTeXをローカル静的資産として同梱し、`$$...$$`、`\\[...\\]`、`\\(...\\)`を安全に描画する。
+- [x] コードブロック内のTeXは数式化せず、不正な数式やKaTeX未読込時は安全なテキストへフォールバックする。
+- [x] 「新しいチャット」の初回ユーザー入力を空白正規化し、先頭38文字をセッション名として保存する。
+- [x] 明示済みタイトルを保持し、ストリーミング開始時に確定タイトルを画面へ即時反映する。
+- [x] KaTeXのJS/CSS/WOFF2フォントとMITライセンスをwheelおよびWindowsアプリの収集対象に含める。
+
+### Verification
+
+- `uv run pytest tests -q`: 106 passed（既知のStarletteDeprecationWarning 1件）
+- `uv run ruff check src tests`: passed
+- `uv run ruff format --check`（変更Pythonファイル）: passed
+- General WebUI JavaScript全件の`node --check`: passed
+- `node tests/test_general_markdown.cjs`、PCA/EIC helper tests: passed
+- `uv run python -m compileall -q src tests`: passed
+- `uv lock --check`: passed
+- wheel内のKaTeX JS/CSS/代表フォント/ライセンス: confirmed
+- Windowsインストーラー再ビルド: `dist\\Use-LLLM-Setup.exe`、SHA256 `194EFB17F147C3627F5ACC0FD364EFDA248987630EE3A7BFA5D7A1104496D84D`
+- packaged runtime smoke: `launcher-health.static_ready=true`、KaTeX JS/CSS/代表フォント200、修正版Markdown/タイトル処理を確認
+- in-app browser: 利用可能なブラウザインスタンスが0件のため未実施

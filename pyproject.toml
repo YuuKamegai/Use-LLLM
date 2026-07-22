@@ -30,7 +30,7 @@ use-lllm = "use_lllm.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-use_lllm = ["static/vendor/*", "general/static/*"]
+use_lllm = ["static/vendor/*", "static/vendor/fonts/*", "general/static/*"]
 
 [tool.ruff]
 line-length = 100

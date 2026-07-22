@@ -124,6 +124,35 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(usage["prompt_tokens"], 80)
         self.assertEqual(usage["measurement_source"], "ollama_prompt_plus_response_estimate")
 
+    async def test_default_title_uses_first_user_message(self) -> None:
+        session = self.store.create_session("新しいチャット", surface="general")
+        loop = GeneralAgentLoop(FakeOllama([response("了解")]), self.store, FakeRegistry({}))
+
+        await loop.chat(session["id"], "  反応速度式を\n   わかりやすく説明して  ")
+
+        self.assertEqual(
+            self.store.get_session(session["id"])["title"],
+            "反応速度式を わかりやすく説明して",
+        )
+
+    async def test_custom_title_is_preserved(self) -> None:
+        loop = GeneralAgentLoop(FakeOllama([response("了解")]), self.store, FakeRegistry({}))
+
+        await loop.chat(self.session["id"], "最初の質問")
+
+        self.assertEqual(self.store.get_session(self.session["id"])["title"], "chat")
+
+    async def test_default_title_is_not_replaced_by_second_message(self) -> None:
+        session = self.store.create_session("新しいチャット", surface="general")
+        loop = GeneralAgentLoop(
+            FakeOllama([response("最初"), response("次")]), self.store, FakeRegistry({})
+        )
+
+        await loop.chat(session["id"], "新しいチャット")
+        await loop.chat(session["id"], "二番目の入力")
+
+        self.assertEqual(self.store.get_session(session["id"])["title"], "新しいチャット")
+
     async def test_stream_chat_forwards_deltas_and_persists_final_answer(self) -> None:
         loop = GeneralAgentLoop(StreamingOllama([]), self.store, FakeRegistry({}))
 
@@ -137,6 +166,15 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         usage = self.store.get_session(self.session["id"])["state"]["context_usage"]
         self.assertEqual(usage["prompt_tokens"], 120)
         self.assertEqual(events[-1]["context_usage"], usage)
+
+    async def test_stream_chat_reports_automatic_title(self) -> None:
+        session = self.store.create_session("新しいチャット", surface="general")
+        loop = GeneralAgentLoop(StreamingOllama([]), self.store, FakeRegistry({}))
+
+        events = [item async for item in loop.chat_stream(session["id"], "速度式を説明して")]
+
+        self.assertEqual(events[0]["session_title"], "速度式を説明して")
+        self.assertEqual(self.store.get_session(session["id"])["title"], "速度式を説明して")
 
     async def test_read_only_auto_tool_runs_then_model_answers(self) -> None:
         ollama = FakeOllama([response(tool="srv::peek", arguments={"x": 1}), response("完了")])

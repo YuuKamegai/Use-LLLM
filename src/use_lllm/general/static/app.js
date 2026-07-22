@@ -412,6 +412,15 @@ async function openSession(id) {
   renderSessionList(); renderMessages(); renderContextUsage(); await loadTools();
 }
 
+function applySessionTitle(title) {
+  if (!state.current || !title) return;
+  state.current.title = title;
+  const summary = state.sessions.find((item) => item.id === state.current.id);
+  if (summary) summary.title = title;
+  $("#session-title").textContent = title;
+  renderSessionList();
+}
+
 async function deleteCurrentSession() {
   if (!state.current || !confirm(`「${state.current.title}」の会話とツール履歴を削除しますか？`)) return;
   try { await api(`sessions/${state.current.id}`, { method: "DELETE" }); state.current = null; renderContextUsage(); $("#chat-workspace").classList.add("hidden"); $("#welcome").classList.remove("hidden"); await loadSessions(); }
@@ -581,6 +590,7 @@ async function sendMessage(event) {
         const line = chunk.split("\n").find((item) => item.startsWith("data: "));
         if (!line) continue;
         const item = JSON.parse(line.slice(6));
+        if (item.session_title) applySessionTitle(item.session_title);
         if (item.type === "status") $("#composer-status").textContent = item.status === "thinking" ? "モデルが考えています" : item.status;
         if (item.type === "delta") {
           streamedContent += item.content || "";

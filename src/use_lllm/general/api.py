@@ -31,7 +31,7 @@ from use_lllm.core.settings_store import (
     save_settings,
 )
 from use_lllm.core.setup_store import SETUP_VERSION, SetupStore
-from use_lllm.general.agent_loop import GeneralAgentLoop
+from use_lllm.general.agent_loop import DEFAULT_GENERAL_SESSION_TITLE, GeneralAgentLoop
 
 STATIC_ROOT = Path(__file__).with_name("static")
 VENDOR_ROOT = STATIC_ROOT.parent.parent / "static" / "vendor"
@@ -47,6 +47,9 @@ def _static_ui_ready() -> bool:
         STATIC_ROOT / "markdown.js",
         STATIC_ROOT / "artifact-renderer.js",
         VENDOR_ROOT / "plotly.min.js",
+        VENDOR_ROOT / "katex.min.js",
+        VENDOR_ROOT / "katex.min.css",
+        VENDOR_ROOT / "fonts" / "KaTeX_Main-Regular.woff2",
     )
     return all(path.is_file() for path in required_files)
 
@@ -77,7 +80,7 @@ class MCPServerBody(StrictModel):
 
 
 class SessionBody(StrictModel):
-    title: str = "新しいチャット"
+    title: str = DEFAULT_GENERAL_SESSION_TITLE
 
 
 class ChatBody(StrictModel):
@@ -650,7 +653,9 @@ def create_general_app(
 
     @app.post("/api/sessions", status_code=201)
     async def create_session(body: SessionBody) -> dict[str, Any]:
-        return sessions.create_session(body.title.strip() or "新しいチャット", surface="general")
+        return sessions.create_session(
+            body.title.strip() or DEFAULT_GENERAL_SESSION_TITLE, surface="general"
+        )
 
     @app.get("/api/sessions/{session_id}")
     async def get_session(session_id: str) -> dict[str, Any]:

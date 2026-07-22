@@ -25,6 +25,9 @@ MCPツール名は server::tool 形式です。ユーザーがtool部分だけ�
 ツール結果、推測、未確認事項を区別し、ユーザーの承認が必要な操作を実行済みと主張しないでください。
 既定は日本語で簡潔に回答してください。"""
 
+DEFAULT_GENERAL_SESSION_TITLE = "新しいチャット"
+GENERAL_SESSION_TITLE_LIMIT = 38
+
 
 class RegistryLike(Protocol):
     def ollama_tools(
@@ -75,6 +78,26 @@ class GeneralAgentLoop:
         if session.get("surface") != "general":
             raise ValueError("汎用チャット用ではないセッションです。")
         return session
+
+    def _begin_user_message(
+        self, session_id: str, message: str, metadata: dict[str, Any] | None
+    ) -> str | None:
+        session = self._general_session(session_id)
+        if session["state"].get("pending_approval") is not None:
+            raise ValueError("承認待ちのツール呼び出しを先に解決してください。")
+        text = message.strip()
+        if not text:
+            raise ValueError("メッセージが空です。")
+
+        new_title = None
+        has_user_message = any(item["role"] == "user" for item in session["messages"])
+        if session["title"] == DEFAULT_GENERAL_SESSION_TITLE and not has_user_message:
+            new_title = " ".join(text.split())[:GENERAL_SESSION_TITLE_LIMIT]
+            self.sessions.update_session(session_id, title=new_title)
+
+        self.sessions.add_message(session_id, "user", text, metadata)
+        self.sessions.update_session(session_id, status="running")
+        return new_title
 
     async def _ollama_messages(
         self, session_id: str, tools: list[dict[str, Any]]
@@ -292,14 +315,7 @@ class GeneralAgentLoop:
     async def chat(
         self, session_id: str, message: str, *, metadata: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        session = self._general_session(session_id)
-        if session["state"].get("pending_approval") is not None:
-            raise ValueError("承認待ちのツール呼び出しを先に解決してください。")
-        text = message.strip()
-        if not text:
-            raise ValueError("メッセージが空です。")
-        self.sessions.add_message(session_id, "user", text, metadata)
-        self.sessions.update_session(session_id, status="running")
+        self._begin_user_message(session_id, message, metadata)
         try:
             return await self._drive(session_id)
         except asyncio.CancelledError:
@@ -318,15 +334,11 @@ class GeneralAgentLoop:
     async def chat_stream(
         self, session_id: str, message: str, *, metadata: dict[str, Any] | None = None
     ) -> AsyncIterator[dict[str, Any]]:
-        session = self._general_session(session_id)
-        if session["state"].get("pending_approval") is not None:
-            raise ValueError("承認待ちのツール呼び出しを先に解決してください。")
-        text = message.strip()
-        if not text:
-            raise ValueError("メッセージが空です。")
-        self.sessions.add_message(session_id, "user", text, metadata)
-        self.sessions.update_session(session_id, status="running")
-        yield {"type": "status", "status": "thinking"}
+        new_title = self._begin_user_message(session_id, message, metadata)
+        status_event = {"type": "status", "status": "thinking"}
+        if new_title is not None:
+            status_event["session_title"] = new_title
+        yield status_event
         try:
             streamer = getattr(self.ollama, "stream_chat", None)
             if streamer is None:

@@ -119,6 +119,9 @@ button { cursor: pointer; }
 .code-block pre { overflow: auto; padding: 14px; border-radius: 9px; background: #252522; color: #f7f5ef; }
 .code-block code { padding: 0; background: transparent; color: inherit; }
 .copy-code { position: absolute; top: 7px; right: 7px; border: 1px solid #5d5b55; border-radius: 5px; background: #383834; color: white; font-size: .62rem; }
+.message-content .katex { font-size: 1.05em; }
+.message-content .katex-display { max-width: 100%; margin: .7em 0; padding: .25em 0; overflow-x: auto; overflow-y: hidden; }
+.math-fallback { font-family: Consolas, "Yu Gothic UI", monospace; white-space: pre-wrap; }
 .message.streaming .avatar { animation: pulse-stream 1.2s infinite; }
 @keyframes pulse-stream { 50% { opacity: .45; } }
 .tool-image { display: block; max-width: min(100%, 720px); max-height: 520px; margin-top: 10px; border-radius: 8px; object-fit: contain; background: white; }

@@ -1,8 +1,8 @@
 (function (root, factory) {
-  const api = factory();
+  const api = factory(() => root.katex);
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GeneralMarkdown = api;
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (getKatex) {
   function escapeHtml(value) {
     return String(value ?? "").replace(/[&<>"']/g, (char) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -16,15 +16,50 @@
       .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
   }
 
+  function hold(fragments, html, block = false) {
+    const index = fragments.length;
+    fragments.push({ html, block });
+    return `\u0000FRAGMENT${index}\u0000`;
+  }
+
+  function renderMath(tex, displayMode, fallbackSource) {
+    const katex = getKatex?.();
+    if (!katex || typeof katex.renderToString !== "function") {
+      return `<span class="math-fallback">${escapeHtml(fallbackSource)}</span>`;
+    }
+    try {
+      return katex.renderToString(tex.trim(), {
+        displayMode,
+        throwOnError: false,
+        trust: false,
+        strict: "warn",
+        output: "htmlAndMathml",
+        maxExpand: 1000,
+        maxSize: 20,
+      });
+    } catch (_error) {
+      return `<span class="math-fallback">${escapeHtml(fallbackSource)}</span>`;
+    }
+  }
+
   function renderMarkdown(source) {
-    const escaped = escapeHtml(source);
-    const blocks = [];
-    const held = escaped.replace(/```([^\n]*)\n?([\s\S]*?)```/g, (_all, lang, code) => {
-      const index = blocks.length;
-      blocks.push(`<div class="code-block"><button type="button" class="copy-code">コピー</button><pre><code data-language="${lang.trim()}">${code.replace(/^\n|\n$/g, "")}</code></pre></div>`);
-      return `@@CODE${index}@@`;
+    const fragments = [];
+    let held = String(source ?? "").replace(/```([^\n]*)\n?([\s\S]*?)```/g, (_all, lang, code) => {
+      const block = `<div class="code-block"><button type="button" class="copy-code">コピー</button><pre><code data-language="${escapeHtml(lang.trim())}">${escapeHtml(code.replace(/^\n|\n$/g, ""))}</code></pre></div>`;
+      return hold(fragments, block, true);
     });
-    const lines = held.split(/\r?\n/);
+    held = held
+      .replace(/\$\$([\s\S]*?)\$\$/g, (all, tex) => (
+        tex.trim() ? hold(fragments, renderMath(tex, true, all), true) : all
+      ))
+      .replace(/\\\[([\s\S]*?)\\\]/g, (all, tex) => (
+        tex.trim() ? hold(fragments, renderMath(tex, true, all), true) : all
+      ))
+      .replace(/\\\(([^\n]*?)\\\)/g, (all, tex) => (
+        tex.trim() ? hold(fragments, renderMath(tex, false, all)) : all
+      ));
+    const escaped = escapeHtml(held);
+    const lines = escaped.split(/\r?\n/);
     const out = [];
     let list = false;
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
@@ -38,8 +73,12 @@
         out.push(`<table><thead><tr>${headers.map((cell) => `<th>${inline(cell)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${inline(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
         continue;
       }
-      const code = raw.match(/^@@CODE(\d+)@@$/);
-      if (code) { if (list) { out.push("</ul>"); list = false; } out.push(blocks[Number(code[1])]); continue; }
+      const fragment = raw.match(/^\u0000FRAGMENT(\d+)\u0000$/);
+      if (fragment && fragments[Number(fragment[1])]?.block) {
+        if (list) { out.push("</ul>"); list = false; }
+        out.push(raw);
+        continue;
+      }
       const heading = raw.match(/^(#{1,4})\s+(.+)$/);
       const bullet = raw.match(/^[-*]\s+(.+)$/);
       if (heading) { if (list) { out.push("</ul>"); list = false; } const level = heading[1].length; out.push(`<h${level}>${inline(heading[2])}</h${level}>`); }
@@ -47,7 +86,9 @@
       else { if (list) { out.push("</ul>"); list = false; } if (raw) out.push(`<p>${inline(raw)}</p>`); }
     }
     if (list) out.push("</ul>");
-    return out.join("");
+    return out.join("").replace(/\u0000FRAGMENT(\d+)\u0000/g, (_all, index) => (
+      fragments[Number(index)]?.html ?? ""
+    ));
   }
   return { escapeHtml, renderMarkdown };
 });

@@ -41,16 +41,20 @@ class GeneralUiContractTests(unittest.TestCase):
         self.assertIn("引数（1行1引数）", html)
         self.assertIn("server::tool", html)
         self.assertIn("./vendor/plotly.min.js", html)
+        self.assertIn("./vendor/katex.min.js", html)
+        self.assertIn("./vendor/katex.min.css", html)
         self.assertIn("./static/pca-plot.js", html)
         self.assertIn("./static/eic-plot.js", html)
         self.assertIn("appendPcaPlot", script)
         self.assertIn("appendEicPlot", script)
+        self.assertIn("applySessionTitle", script)
         self.assertIn("function appendMessage(item)", script)
         self.assertIn("function renderContextUsage()", script)
         self.assertIn("残りコンテキスト", script)
         self.assertIn('meter.classList.add("critical")', script)
         self.assertIn(".context-meter.warning", styles)
         self.assertIn(".context-meter.critical", styles)
+        self.assertIn(".message-content .katex-display", styles)
         self.assertIn('id="setup-overlay"', html)
         self.assertIn("async function pullSetupModel()", script)
         self.assertIn('api("setup/complete"', script)
@@ -87,6 +91,9 @@ class GeneralUiContractTests(unittest.TestCase):
                 pca_helper = client.get("/static/pca-plot.js")
                 eic_helper = client.get("/static/eic-plot.js")
                 plotly = client.get("/vendor/plotly.min.js")
+                katex_script = client.get("/vendor/katex.min.js")
+                katex_styles = client.get("/vendor/katex.min.css")
+                katex_font = client.get("/vendor/fonts/KaTeX_Main-Regular.woff2")
                 launcher_health = client.get("/api/launcher-health")
         self.assertEqual(index.status_code, 200)
         self.assertIn("Use-LLLM General", index.text)
@@ -98,6 +105,9 @@ class GeneralUiContractTests(unittest.TestCase):
         self.assertEqual(eic_helper.status_code, 200)
         self.assertIn("GeneralEicPlot", eic_helper.text)
         self.assertEqual(plotly.status_code, 200)
+        self.assertEqual(katex_script.status_code, 200)
+        self.assertEqual(katex_styles.status_code, 200)
+        self.assertEqual(katex_font.status_code, 200)
         self.assertEqual(
             launcher_health.json(),
             {
@@ -127,6 +137,7 @@ class GeneralUiContractTests(unittest.TestCase):
     def test_package_includes_general_static(self) -> None:
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         self.assertIn('"general/static/*"', pyproject)
+        self.assertIn('"static/vendor/fonts/*"', pyproject)
 
     def test_windows_launcher_targets_general_surface(self) -> None:
         launcher = (ROOT / "Start-WebUI.ps1").read_text(encoding="utf-8")
