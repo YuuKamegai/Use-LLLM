@@ -39,16 +39,22 @@
     };
   }
 
+  // 1物質×複数サンプル（single）と複数物質×1サンプル（multi）の2スキーマを受ける。
+  const SCHEMAS = { "lipidmix.eic.v1": "single", "lipidmix.eic.multi.v1": "multi" };
+
   function normalizePlot(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    if (value.plot_schema !== "lipidmix.eic.v1" || value.plot_type !== "line") return null;
+    const schema = SCHEMAS[value.plot_schema];
+    if (!schema || value.plot_type !== "line") return null;
     if (!Array.isArray(value.series)) return null;
     const series = value.series.map(normalizeSeries).filter(Boolean);
     if (!series.length || series.length !== value.series.length) return null;
     return {
+      schema,
       title: value.title == null || value.title === "" ? "Extracted ion chromatogram" : String(value.title),
       xLabel: axisLabel(value.axes?.x, "RT"),
       yLabel: axisLabel(value.axes?.y, "Intensity"),
+      showAnnotations: value.render_hints?.show_annotations === true,
       series,
       raw: value,
     };
@@ -82,6 +88,46 @@
     return null;
   }
 
+  function customdataFor(plot, item) {
+    if (plot.schema === "multi") {
+      return {
+        spot_id: item.spot_id,
+        name: item.name,
+        ontology: item.ontology,
+        adduct: item.adduct,
+        mz: item.mz,
+        rt: item.rt,
+        peak_top: item.peak_top,
+        max_intensity: item.max_intensity,
+      };
+    }
+    return {
+      file_id: item.file_id,
+      sample_name: item.sample_name,
+      class_id: item.class_id,
+      peak_left: item.peak_left,
+      peak_top: item.peak_top,
+      peak_right: item.peak_right,
+    };
+  }
+
+  // multi の物質メタは trace 内で一定なので、customdata 補間に頼らず
+  // hovertemplate 文字列へ焼き込む（Plotly のバージョン差で崩れないため）。
+  function hovertemplateFor(plot, item) {
+    const tail = "x %{x:.5g}<br>intensity %{y:.5g}<extra></extra>";
+    if (plot.schema !== "multi") return `%{fullData.name}<br>${tail}`;
+    const mz = Number(item.mz);
+    const rt = Number(item.rt);
+    const meta = [
+      item.ontology ? String(item.ontology) : null,
+      Number.isFinite(mz) ? `m/z ${mz.toFixed(4)}` : null,
+      Number.isFinite(rt) ? `RT ${rt.toFixed(2)}` : null,
+    ].filter(Boolean).join(" · ");
+    return meta
+      ? `%{fullData.name}<br>${meta}<br>${tail}`
+      : `%{fullData.name}<br>${tail}`;
+  }
+
   function traces(plot) {
     return plot.series.map((item) => ({
       type: item.x.length > 500 ? "scattergl" : "scatter",
@@ -89,18 +135,27 @@
       name: item.label,
       x: item.x,
       y: item.y,
-      customdata: item.x.map(() => ({
-        file_id: item.file_id,
-        sample_name: item.sample_name,
-        class_id: item.class_id,
-        peak_left: item.peak_left,
-        peak_top: item.peak_top,
-        peak_right: item.peak_right,
-      })),
-      hovertemplate: "%{fullData.name}<br>x %{x:.5g}<br>intensity %{y:.5g}<extra></extra>",
+      customdata: item.x.map(() => customdataFor(plot, item)),
+      hovertemplate: hovertemplateFor(plot, item),
       line: { width: 1.5 },
     }));
   }
 
-  return { findPlot, traces };
+  function annotations(plot) {
+    if (plot.schema !== "multi" || !plot.showAnnotations) return [];
+    return plot.series
+      .filter((item) => item.annotation && Number.isFinite(Number(item.annotation.x)))
+      .map((item) => ({
+        text: String(item.annotation.text == null ? item.label : item.annotation.text),
+        x: Number(item.annotation.x),
+        y: Number(item.annotation.y),
+        showarrow: false,
+        textangle: -45,
+        yshift: 10,
+        xanchor: "left",
+        font: { size: 9 },
+      }));
+  }
+
+  return { findPlot, traces, annotations };
 }));
