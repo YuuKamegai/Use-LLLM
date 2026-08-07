@@ -46,7 +46,12 @@ class FoundationIntegrationTests(unittest.TestCase):
 
     def test_ms_data_parser_read_only_auto_flows_into_policy(self) -> None:
         spec = MCPServerSpec(name="ms-data-parser", command="python", read_only_auto=True)
-        decision = decide_server_tool(spec.name, "arf_parser", read_only_auto=spec.read_only_auto)
+        decision = decide_server_tool(
+            spec.name,
+            "arf_parser",
+            annotations={"readOnlyHint": True},
+            read_only_auto=spec.read_only_auto,
+        )
         self.assertTrue(decision.allowed)
         self.assertFalse(decision.approval_required)
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import unittest
 
-from use_lllm.core.policy import ToolSafety, classify_tool
+from use_lllm.core.policy import ToolSafety, classify_server_tool
 
 READ_ONLY = ToolSafety.READ_ONLY
 LOCAL_WRITE = ToolSafety.LOCAL_WRITE
@@ -65,8 +65,11 @@ CURRENT_CLASSIFICATION: dict[str, ToolSafety] = {
 # annotations 単独判定へ移行したときに意図的に変わるもの（設計書 §6）。
 # ingest_review_queue は build_inbox_index() を返すだけの純粋な読み取りで、
 # KNOWLEDGE_MUTATION に入っているのは名前リストの分類ミス。ユーザ承認済みの緩和。
+# log_search はファイルへ追記するツールで、READ_ONLY に入っているのは逆方向の
+# 分類ミス。annotations では readOnlyHint=False として宣言されるため厳格化される。
 EXPECTED_CHANGES: dict[str, ToolSafety] = {
     "ingest_review_queue": READ_ONLY,
+    "log_search": LOCAL_WRITE,
 }
 
 # 監査ラベルだけ変わるもの。decide_server_tool では LOCAL_WRITE も
@@ -88,9 +91,78 @@ class CurrentClassificationSnapshotTests(unittest.TestCase):
     def test_snapshot_covers_every_ms_data_parser_tool(self) -> None:
         self.assertEqual(len(CURRENT_CLASSIFICATION), 40)
 
-    def test_snapshot_matches_the_name_based_classifier(self) -> None:
-        for name, expected in CURRENT_CLASSIFICATION.items():
-            self.assertEqual(classify_tool(name), expected, name)
+
+# Task 4 でサーバが宣言する annotations と同じ表。片方だけ変わったら落ちる。
+# APPEND 系（追記するので idempotent でない）は ingest_stage / log_search /
+# update_objective の3件。サーバ側 tests/test_tool_annotations.py と一致させること。
+READ_ONLY_ANN = {"readOnlyHint": True}
+EXTERNAL_ANN = {"readOnlyHint": True, "openWorldHint": True}
+LOCAL_WRITE_ANN = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True}
+APPEND_ANN = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
+DESTRUCTIVE_ANN = {"readOnlyHint": False, "destructiveHint": True}
+
+ANNOTATIONS: dict[str, dict[str, bool]] = {
+    name: (
+        EXTERNAL_ANN
+        if name == "paper_search"
+        else DESTRUCTIVE_ANN
+        if name in {"ingest_promote", "ingest_reject"}
+        else APPEND_ANN
+        if name in {"ingest_stage", "log_search", "update_objective"}
+        else LOCAL_WRITE_ANN
+        if CURRENT_CLASSIFICATION[name] is LOCAL_WRITE
+        else READ_ONLY_ANN
+    )
+    for name in CURRENT_CLASSIFICATION
+}
+
+
+class AnnotationDrivenClassificationTests(unittest.TestCase):
+    def test_reproduces_the_snapshot_except_for_expected_changes(self) -> None:
+        expected = expected_after_migration()
+        for name, ann in ANNOTATIONS.items():
+            self.assertEqual(classify_server_tool(name, annotations=ann), expected[name], name)
+
+    def test_only_the_two_expected_tools_change_classification(self) -> None:
+        """分類が変わるのは2件だけ（設計書 §6）。それ以外はすべて回帰。"""
+        changed = {
+            name
+            for name in CURRENT_CLASSIFICATION
+            if classify_server_tool(name, annotations=ANNOTATIONS[name])
+            is not CURRENT_CLASSIFICATION[name]
+        }
+        self.assertEqual(changed, set(EXPECTED_CHANGES) | set(EXPECTED_LABEL_CHANGES))
+
+    def test_only_the_expected_tools_change_permission(self) -> None:
+        """実行可否が変わるのは EXPECTED_CHANGES の2件だけ（設計書 §6.1）。
+
+        LOCAL_WRITE も KNOWLEDGE_MUTATION も decide_server_tool では等しく承認必須
+        なので、ingest_stage は監査ラベルが変わるだけで実行可否は変わらない。
+        """
+        approval_free = {ToolSafety.READ_ONLY}
+        changed = {
+            name
+            for name in CURRENT_CLASSIFICATION
+            if (CURRENT_CLASSIFICATION[name] in approval_free)
+            is not (classify_server_tool(name, annotations=ANNOTATIONS[name]) in approval_free)
+        }
+        self.assertEqual(changed, set(EXPECTED_CHANGES))
+
+    def test_open_world_wins_over_read_only(self) -> None:
+        """判定順を誤ると paper_search が READ_ONLY に落ちて network ゲートを迂回する。"""
+        self.assertEqual(
+            classify_server_tool("paper_search", annotations=EXTERNAL_ANN),
+            ToolSafety.EXTERNAL_NETWORK,
+        )
+
+    def test_a_server_without_annotations_stays_unknown(self) -> None:
+        self.assertEqual(classify_server_tool("whatever", annotations=None), ToolSafety.UNKNOWN)
+
+    def test_partial_annotations_do_not_guess(self) -> None:
+        """未設定フィールドは None で入る。truthiness で判定すると誤る。"""
+        self.assertEqual(
+            classify_server_tool("x", annotations={"readOnlyHint": None}), ToolSafety.UNKNOWN
+        )
 
 
 if __name__ == "__main__":

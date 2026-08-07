@@ -239,7 +239,6 @@ class MCPClient:
     ) -> MCPToolResult:
         """Validate, authorize and call one advertised MCP tool."""
 
-        enforce_tool(tool_name, approved=approved, network_mode=network_mode)
         timeout = timeout_seconds or max(self._config.startup_timeout_seconds, 300.0)
         try:
             async with asyncio.timeout(timeout):
@@ -248,6 +247,14 @@ class MCPClient:
                     tools = {tool.name: tool for tool in await list_all_tools(session)}
                     if tool_name not in tools:
                         raise MCPConnectionError(f"MCPがツールを公開していません: {tool_name}")
+                    # 承認判定はサーバが宣言した annotations で行う。ツール一覧を
+                    # 取ってからでないと annotations が読めないため、接続後に判定する。
+                    enforce_tool(
+                        tool_name,
+                        annotations=tools[tool_name].annotations,
+                        approved=approved,
+                        network_mode=network_mode,
+                    )
                     values = arguments or {}
                     self._validate_arguments(tools[tool_name], values)
                     result = await session.call_tool(tool_name, values)
@@ -264,17 +271,22 @@ class MCPClient:
     ) -> tuple[MCPToolResult, ...]:
         """Execute a stateful tool sequence in one MCP session."""
 
-        for call in calls:
-            enforce_tool(call.name, approved=call.approved, network_mode=network_mode)
         try:
             async with asyncio.timeout(timeout_seconds):
                 async with self.connect() as session:
                     await session.initialize()
                     tools = {tool.name: tool for tool in await list_all_tools(session)}
-                    results: list[MCPToolResult] = []
                     for call in calls:
                         if call.name not in tools:
                             raise MCPConnectionError(f"MCPがツールを公開していません: {call.name}")
+                        enforce_tool(
+                            call.name,
+                            annotations=tools[call.name].annotations,
+                            approved=call.approved,
+                            network_mode=network_mode,
+                        )
+                    results: list[MCPToolResult] = []
+                    for call in calls:
                         self._validate_arguments(tools[call.name], call.arguments)
                         raw = await session.call_tool(call.name, call.arguments)
                         result = self._serialize_result(call.name, raw)

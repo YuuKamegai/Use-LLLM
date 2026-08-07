@@ -16,60 +16,6 @@ class ToolSafety(StrEnum):
     UNKNOWN = "unknown"
 
 
-# ms-data-parser の実ツール名と一致させる（正準は同サーバの
-# tests/test_server_registration.py の EXPECTED_TOOLS）。旧名が残ると
-# classify_tool が UNKNOWN を返し、read-only 解析が毎回承認待ちで止まる。
-# paper_search は EXTERNAL_NETWORK_TOOLS 側にあるためここへ入れてはいけない
-# （入れると network_mode のゲートを迂回する）。
-READ_ONLY_TOOLS = frozenset(
-    {
-        "list_reports",
-        "read_report",
-        "list_data_files",
-        "load_dataset",
-        "log_search",
-        "knowledge_coverage",
-        "sample_search",
-        "pai2_parser",
-        "pai2_inspect_peak",
-        "verify_peak_annotation",
-        "dcl_parser",
-        "dcl_find_msms",
-        "arf_list_tags",
-        "arf_list_classes",
-        "arf_list_sample_roles",
-        "arf_exclude",
-        "arf_preprocess",
-        "arf_pca_preprocessed",
-        "arf_parser",
-        "arf_differential",
-        "arf_plot_volcano",
-        "arf2_parser",
-        "arf2_annotate_identities",
-        "eic_parser",
-        "eic_plot_chromatograms",
-        "eic_plot_compounds",
-        "eic_rank_by_max_intensity",
-        "eic_search_by_mz_range",
-        "eic_search_by_rt_range",
-    }
-)
-LOCAL_WRITE_TOOLS = frozenset(
-    {
-        "write_report",
-        "save_pca_figure",
-        "save_eic_figure",
-        "save_volcano_figure",
-        "record_objective",
-        "update_objective",
-    }
-)
-EXTERNAL_NETWORK_TOOLS = frozenset({"paper_search"})
-KNOWLEDGE_MUTATION_TOOLS = frozenset(
-    {"ingest_stage", "ingest_review_queue", "ingest_promote", "ingest_reject"}
-)
-
-
 class ToolPolicyError(PermissionError):
     pass
 
@@ -92,62 +38,46 @@ class ToolDecision:
         }
 
 
-def classify_tool(tool_name: str) -> ToolSafety:
-    if tool_name in READ_ONLY_TOOLS:
-        return ToolSafety.READ_ONLY
-    if tool_name in LOCAL_WRITE_TOOLS:
-        return ToolSafety.LOCAL_WRITE
-    if tool_name in EXTERNAL_NETWORK_TOOLS:
-        return ToolSafety.EXTERNAL_NETWORK
-    if tool_name in KNOWLEDGE_MUTATION_TOOLS:
-        return ToolSafety.KNOWLEDGE_MUTATION
-    return ToolSafety.UNKNOWN
-
-
-def decide_tool(
-    tool_name: str, approved: bool = False, network_mode: str = "offline"
-) -> ToolDecision:
-    safety = classify_tool(tool_name)
-    if safety == ToolSafety.UNKNOWN:
-        return ToolDecision(tool_name, safety, False, True, "未知のツールは実行しません。")
-    if safety == ToolSafety.READ_ONLY:
-        return ToolDecision(tool_name, safety, True, False, "ローカルread-only解析です。")
-    if safety == ToolSafety.EXTERNAL_NETWORK and network_mode != "literature-only":
-        return ToolDecision(tool_name, safety, False, True, "ネットワークモードがofflineです。")
-    if not approved:
-        return ToolDecision(tool_name, safety, False, True, "明示的な承認が必要です。")
-    return ToolDecision(tool_name, safety, True, True, "承認済みです。")
-
-
-def enforce_tool(
-    tool_name: str, approved: bool = False, network_mode: str = "offline"
-) -> ToolDecision:
-    decision = decide_tool(tool_name, approved, network_mode)
-    if not decision.allowed:
-        raise ToolPolicyError(decision.reason)
-    return decision
-
-
-BUILTIN_PROFILE_SERVERS = frozenset({"ms-data-parser"})
-
-
 def classify_server_tool(
-    server_name: str,
     tool_name: str,
     *,
     annotations: Mapping[str, Any] | None = None,
 ) -> ToolSafety:
-    """サーバー単位でツールの安全クラスを判定する。
+    """MCP 標準 annotations だけからツールの安全クラスを決める。
 
-    既知プロファイルは名前ベースで分類し、未知サーバーはMCP annotationsの
-    readOnlyHintだけを安全側のヒントとして使う。
+    サーバ固有のツール名リストは持たない。汎用 MCP クライアントとして、
+    どのローカルサーバに対しても同じ規則で判定する。
+
+    判定順が重要。openWorldHint を先に見ないと、外部を読むだけのツール
+    （readOnlyHint も真になる）が READ_ONLY に落ちて network_mode のゲートを
+    迂回する。
+
+    未設定フィールドは model_dump(by_alias=True) の結果で None として入るため、
+    必ず `is True` / `is False` で判定する。truthiness では None を False と
+    区別できず、宣言していない項目を「宣言した」と誤読する。
     """
-
-    if server_name in BUILTIN_PROFILE_SERVERS:
-        return classify_tool(tool_name)
-    if annotations is not None and annotations.get("readOnlyHint") is True:
+    if annotations is None:
+        return ToolSafety.UNKNOWN
+    if annotations.get("openWorldHint") is True:
+        return ToolSafety.EXTERNAL_NETWORK
+    if annotations.get("readOnlyHint") is True:
         return ToolSafety.READ_ONLY
+    if annotations.get("destructiveHint") is True:
+        return ToolSafety.KNOWLEDGE_MUTATION
+    if annotations.get("readOnlyHint") is False:
+        return ToolSafety.LOCAL_WRITE
     return ToolSafety.UNKNOWN
+
+
+def is_replay_safe(annotations: Mapping[str, Any] | None) -> bool:
+    """同じ引数での再実行が安全か。状態復旧のリプレイ可否に使う。
+
+    MCP 仕様は idempotentHint を「readOnlyHint == false のときだけ意味を持つ」と
+    定義するため、readOnlyHint との OR で拾う。
+    """
+    if annotations is None:
+        return False
+    return annotations.get("readOnlyHint") is True or annotations.get("idempotentHint") is True
 
 
 def decide_server_tool(
@@ -161,7 +91,7 @@ def decide_server_tool(
 ) -> ToolDecision:
     """任意サーバーのツール1件について実行可否と承認要否を決める。"""
 
-    safety = classify_server_tool(server_name, tool_name, annotations=annotations)
+    safety = classify_server_tool(tool_name, annotations=annotations)
     qualified = f"{server_name}::{tool_name}"
     if safety == ToolSafety.UNKNOWN:
         if approved:
@@ -184,3 +114,28 @@ def decide_server_tool(
     if not approved:
         return ToolDecision(qualified, safety, False, True, "明示的な承認が必要です。")
     return ToolDecision(qualified, safety, True, True, "承認済みです。")
+
+
+def enforce_tool(
+    tool_name: str,
+    *,
+    annotations: Mapping[str, Any] | None = None,
+    approved: bool = False,
+    network_mode: str = "offline",
+    server_name: str = "mcp",
+) -> ToolDecision:
+    """許可されないツール呼び出しを ToolPolicyError で止める。
+
+    annotations を渡せないほど早い段階では呼ばないこと（annotations=None は
+    UNKNOWN＝承認必須になる）。
+    """
+    decision = decide_server_tool(
+        server_name,
+        tool_name,
+        annotations=annotations,
+        approved=approved,
+        network_mode=network_mode,
+    )
+    if not decision.allowed:
+        raise ToolPolicyError(decision.reason)
+    return decision

@@ -71,6 +71,7 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
                             "properties": {"input": {"type": "string"}},
                             "required": ["input"],
                         },
+                        annotations={"readOnlyHint": True},
                     )
                 ]
             ),
@@ -123,8 +124,10 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_session_scoped_connections_preserve_and_isolate_server_state(self) -> None:
         tools = [
-            FakeTool("arf_parser", {"type": "object"}),
-            FakeTool("arf_pca_preprocessed", {"type": "object"}),
+            FakeTool("arf_parser", {"type": "object"}, annotations={"readOnlyHint": True}),
+            FakeTool(
+                "arf_pca_preprocessed", {"type": "object"}, annotations={"readOnlyHint": True}
+            ),
         ]
         opened = []
         closed = []
