@@ -82,6 +82,12 @@ class ReadMissingStateTests(unittest.TestCase):
         self.assertIsNone(read_missing_state(""))
         self.assertIsNone(read_missing_state(None))
 
+    def test_non_string_input_never_raises(self) -> None:
+        """全サーバの全ツール結果が通る経路なので、例外を出したら全呼び出しが壊れる。"""
+        for value in (123, 3.14, True, {"a": 1}, [1, 2, 3], object()):
+            with self.subTest(value=value):
+                self.assertIsNone(read_missing_state(value))
+
     def test_json_array_is_not_an_envelope(self) -> None:
         self.assertIsNone(read_missing_state("[1, 2, 3]"))
 

@@ -4,7 +4,10 @@
 それを読み取るだけのモジュール。**特定のサーバ名もツール名も知らない。**
 契約を実装しないサーバの結果は素通しになるので、後方互換は保たれる。
 
-契約の定義は ms-data-parser の docs/output_format/core.md にある。
+契約の形式は、ツール結果が {"error": {"code": "missing_state", "state": "...",
+"required_tools": [...], "message": "..."}} の JSON オブジェクトを含むテキスト。
+state はサーバが決める不透明な識別子。required_tools は OR の代替候補で、
+先頭ほど優先される。
 """
 
 from __future__ import annotations
@@ -49,8 +52,12 @@ def read_missing_state(result_text: str | None) -> MissingState | None:
     壊れた JSON、別の error code、必須フィールド欠落はすべて None。例外は投げない
     （契約を実装しないサーバの通常の出力が大量に流れてくる経路なので、
     ここで落ちると全ツール呼び出しが壊れる）。
+
+    型チェック（isinstance）が必要な理由：falsy 値のみをフィルタすると、
+    True や {"a": 1} などの truthy な非文字列が _candidate_payloads に
+    到達し、.find() メソッドが存在しないため AttributeError が発生する。
     """
-    if not result_text:
+    if not isinstance(result_text, str) or not result_text:
         return None
     for candidate in _candidate_payloads(result_text):
         found = _read_one(candidate)
