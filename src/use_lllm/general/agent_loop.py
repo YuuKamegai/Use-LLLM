@@ -29,6 +29,16 @@ MCPツール名は server::tool 形式です。ユーザーがtool部分だけ�
 # 暴走を止める安全弁としては機能させたいので無制限にはしない。
 DEFAULT_MAX_STEPS = 20
 
+# 状態復旧の再帰段数の上限。実運用で観測される最長の前提チェーンは
+# 「データ読み込み → 前処理 → 前処理済み行列に対する解析」の3段
+# （読み込み → 前処理結果 → その結果を使う解析、という3種類の状態）で、
+# 3段あれば末端まで復旧できる。汎用クライアントなのでチェーンの中身は
+# サーバ固有の知識として持たない。サーバが循環した前提を宣言してしまった
+# 場合（AがBを要求し、BがAを要求する）でも、この上限が有限回で必ず
+# 再帰を止める安全弁になる。named constant として切り出しているのは、
+# 正常なチェーン長が変わったときにここだけ見れば判断できるようにするため。
+MAX_RECOVERY_DEPTH = 3
+
 DEFAULT_GENERAL_SESSION_TITLE = "新しいチャット"
 GENERAL_SESSION_TITLE_LIMIT = 38
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -343,6 +353,86 @@ class GeneralAgentLoop:
                 found = item
         return found
 
+    async def _safe_replay_call(
+        self,
+        session_id: str,
+        target: str,
+        arguments: dict[str, Any],
+        replay_of_id: int,
+        network_mode: str,
+    ) -> MCPToolResult | None:
+        """リプレイ実行を1回行う。例外はここで飲み込み、None を返す（FIX2）。
+
+        MCPConnectionError（タイムアウトなど）や ToolPolicyError が漏れると、
+        呼び出し元の _drive / chat() まで伝播してターン全体を落としてしまう。
+        復旧の失敗は「復旧できなかった」という結果であって、ターンを止める
+        理由にはしない。失敗はイベントとして記録し、呼び出し元には None を
+        返して次の候補（またはあきらめ）に委ねる。
+
+        approved は常に False を渡す。この直前で registry.decide(..., approved=False)
+        が許可を出した候補だけがここに到達するため（FIX3）、ここで改めて
+        True を主張して承認判定を上書きしない。
+        """
+        try:
+            return await self._call_and_record(
+                session_id,
+                target,
+                arguments,
+                approved=False,
+                network_mode=network_mode,
+                replay_of_id=replay_of_id,
+                add_message=False,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 復旧経路の例外は全て「復旧失敗」に縮退させる
+            self.sessions.append_event(
+                session_id,
+                "mcp_state_recovery_error",
+                {"tool": target, "error": str(exc)},
+                status="failed",
+            )
+            return None
+
+    async def _replay_producer(
+        self,
+        session_id: str,
+        target: str,
+        source: dict[str, Any],
+        *,
+        network_mode: str,
+        depth: int,
+    ) -> MCPToolResult | None:
+        """候補を1つ再実行する。自身も missing_state を返したら、depth+1 で
+        その前提を再帰的に復旧してから、この候補をもう一度だけ再実行する
+        （連鎖する前提状態の復旧。FIX1）。
+
+        再帰の停止は呼び出し先の _recover_missing_state の depth ガードが
+        保証する。ここでは深さを1つ増やして渡すだけでよい。
+        """
+        arguments = dict(source["arguments"])
+        replay_of_id = int(source["id"])
+        replayed = await self._safe_replay_call(
+            session_id, target, arguments, replay_of_id, network_mode
+        )
+        if replayed is None or not replayed.is_error:
+            return replayed
+
+        inner_missing = read_missing_state(self._tool_content(replayed))
+        if inner_missing is None:
+            return replayed  # ただのエラー。連鎖ではないので復旧しない。
+
+        inner_recovered = await self._recover_missing_state(
+            session_id, target, inner_missing, network_mode=network_mode, depth=depth + 1
+        )
+        if inner_recovered is None:
+            return replayed  # 前提の復旧に失敗。この候補はあきらめる。
+
+        # 前提が復旧できたので、この候補をもう一度だけ再実行する。
+        return await self._safe_replay_call(
+            session_id, target, arguments, replay_of_id, network_mode
+        )
+
     async def _recover_missing_state(
         self,
         session_id: str,
@@ -350,6 +440,7 @@ class GeneralAgentLoop:
         missing: MissingState,
         *,
         network_mode: str,
+        depth: int = 0,
     ) -> str | None:
         """required_tools の候補を順に試して状態を復元する。復元できたツール名を返す。
 
@@ -362,10 +453,21 @@ class GeneralAgentLoop:
         最後に成功した呼び出し（invocation id が最大のもの）を選ぶ。ユーザーが
         直前に見ていたのはその状態のはずで、より古い候補を復元すると
         別の状態を「同じもの」として見せてしまう。
+
+        候補ごとに registry.decide(approved=False) で現在のポリシー判断
+        （read_only_auto・network_mode・disabled_tools 相当の承認要件）を
+        確認し、許可されない候補は「承認を主張して実行」するのではなく
+        使えないものとして次の候補に進む（FIX3）。
+
+        候補自身が missing_state を返した場合は、depth を1つ増やして
+        自分自身を再帰的に呼び出し、その前提を復旧してから候補を再実行する
+        （FIX1）。depth が MAX_RECOVERY_DEPTH に達したら、サーバが循環した
+        前提を宣言していても必ずここで打ち切る。
         """
+        if depth >= MAX_RECOVERY_DEPTH:
+            return None
         server_name = self._server_name(qualified_name)
-        best_target: str | None = None
-        best_source: dict[str, Any] | None = None
+        candidates: list[tuple[int, str, dict[str, Any]]] = []
         for bare in missing.required_tools:
             target = f"{server_name}::{bare}"
             if not self.registry.is_replay_safe(target):
@@ -373,23 +475,19 @@ class GeneralAgentLoop:
             source = self._replay_source(session_id, target)
             if source is None:
                 continue
-            if best_source is None or int(source["id"]) > int(best_source["id"]):
-                best_target = target
-                best_source = source
-        if best_target is None or best_source is None:
-            return None
-        replayed = await self._call_and_record(
-            session_id,
-            best_target,
-            dict(best_source["arguments"]),
-            approved=True,
-            network_mode=network_mode,
-            replay_of_id=int(best_source["id"]),
-            add_message=False,
-        )
-        if replayed.is_error:
-            return None
-        return best_target
+            candidates.append((int(source["id"]), target, source))
+        candidates.sort(key=lambda item: item[0], reverse=True)
+
+        for _, target, source in candidates:
+            decision = self.registry.decide(target, approved=False, network_mode=network_mode)
+            if not decision.allowed:
+                continue
+            replayed = await self._replay_producer(
+                session_id, target, source, network_mode=network_mode, depth=depth
+            )
+            if replayed is not None and not replayed.is_error:
+                return target
+        return None
 
     async def _maybe_recover_and_retry(
         self,
@@ -404,7 +502,17 @@ class GeneralAgentLoop:
         """missing_state なら状態を復元して1回だけリトライする。
 
         リトライは1段のみ。リトライ後の結果はこの関数を通らないので、
-        復旧の復旧は起きない。
+        復旧の復旧は起きない（_recover_missing_state 内部の連鎖復旧とは別物）。
+
+        リトライの実行そのものも例外を飲み込む（FIX2）。復旧が成功しても
+        続く再実行がタイムアウト等で例外を投げれば、ターンを落とさず
+        「復旧は試みたが再実行できなかった」結果に縮退させる。
+
+        通知メッセージは、リトライの成否が分かってから初めて書く（FIX4）。
+        「直前のエラーは解消済みです」のような、リトライ前に解決を主張する
+        文言は、リトライが失敗した場合に会話履歴へ偽の事実を残してしまう。
+        また「復旧できたのは required_tools に挙げられた1つの状態だけ」で
+        あり、セッション全体が復元されたわけではないことも明示する。
         """
         if not result.is_error:
             return result
@@ -431,16 +539,47 @@ class GeneralAgentLoop:
             "mcp_state_recovered",
             {"tool": qualified_name, "state": missing.state, "replayed": recovered},
         )
-        self.sessions.add_message(
-            session_id,
-            "tool",
-            f"[自動復旧] {recovered} を記録済みの引数で再実行して状態を復元しました。"
-            f"直前のエラーは解消済みです。続けて {qualified_name} を再実行します。",
-            {"tool_name": qualified_name, "recovery": True},
-        )
-        return await self._call_and_record(
-            session_id, qualified_name, arguments, approved=approved, network_mode=network_mode
-        )
+        try:
+            retried = await self._call_and_record(
+                session_id, qualified_name, arguments, approved=approved, network_mode=network_mode
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - リトライの例外もターンを落とさず縮退させる
+            self.sessions.append_event(
+                session_id,
+                "mcp_state_recovery_error",
+                {"tool": qualified_name, "error": str(exc)},
+                status="failed",
+            )
+            self.sessions.add_message(
+                session_id,
+                "tool",
+                f"[自動復旧] {recovered} の状態のみ記録済みの引数で再実行して復元しましたが、"
+                f"続く {qualified_name} の再実行中に例外が発生したため中断しました: {exc}",
+                {"tool_name": qualified_name, "recovery": True, "recovery_succeeded": False},
+            )
+            return result
+
+        if retried.is_error:
+            self.sessions.add_message(
+                session_id,
+                "tool",
+                f"[自動復旧] {recovered} の状態のみ記録済みの引数で再実行して復元しましたが、"
+                f"{qualified_name} の再実行は依然として失敗しました。直前のエラーは解消して"
+                "いません。",
+                {"tool_name": qualified_name, "recovery": True, "recovery_succeeded": False},
+            )
+        else:
+            self.sessions.add_message(
+                session_id,
+                "tool",
+                f"[自動復旧] {recovered} の状態のみ記録済みの引数で再実行して復元し、"
+                f"続く {qualified_name} の再実行に成功しました。セッション全体が復元された"
+                "わけではなく、復元されたのはこの状態のみです。",
+                {"tool_name": qualified_name, "recovery": True, "recovery_succeeded": True},
+            )
+        return retried
 
     async def chat(
         self, session_id: str, message: str, *, metadata: dict[str, Any] | None = None
