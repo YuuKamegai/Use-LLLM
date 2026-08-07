@@ -50,8 +50,15 @@ class GeneralUiContractTests(unittest.TestCase):
         self.assertIn("./vendor/katex.min.css", html)
         self.assertIn("./static/pca-plot.js", html)
         self.assertIn("./static/eic-plot.js", html)
+        self.assertIn("./static/volcano-plot.js", html)
         self.assertIn("appendPcaPlot", script)
         self.assertIn("appendEicPlot", script)
+        self.assertIn("appendVolcanoPlot", script)
+        # 図の説明文・破線・EIC注釈はヘルパ側の責務。app.js は結果を渡すだけにする
+        # （説明文のロジックが app.js に戻るとテストできなくなる）。
+        self.assertIn("window.GeneralVolcanoPlot.note(volcano)", script)
+        self.assertIn("window.GeneralVolcanoPlot.shapes(volcano)", script)
+        self.assertIn("window.GeneralEicPlot.annotations(eic)", script)
         self.assertIn("applySessionTitle", script)
         self.assertIn("function appendMessage(item)", script)
         self.assertIn("function renderContextUsage()", script)

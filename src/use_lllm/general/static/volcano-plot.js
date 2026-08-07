@@ -138,5 +138,33 @@
     return out;
   }
 
-  return { findPlot, traces, shapes };
+  // 全点が描かれていると誤解させないため、点数の欠けをその理由ごとに出す。
+  // 「間引き」と「検定不能で除外」は別の理由なので混ぜない（ns_plotted と
+  // ns_total が一致していれば間引きは起きていない）。
+  function note(plot) {
+    const parts = [];
+    const selection = plot.selection;
+    const total = Number(selection?.total);
+    const plotted = Number(selection?.plotted);
+    if (Number.isFinite(total) && Number.isFinite(plotted) && total > plotted) {
+      parts.push(`${plotted} / ${total} points`);
+    } else {
+      parts.push(`${plot.points.length} points`);
+    }
+    const nsTotal = Number(selection?.ns_total);
+    const nsPlotted = Number(selection?.ns_plotted);
+    if (Number.isFinite(nsTotal) && Number.isFinite(nsPlotted) && nsPlotted < nsTotal) {
+      parts.push(`ns を ${nsTotal}→${nsPlotted} に間引き`);
+    }
+    const significant = Number(selection?.significant_total);
+    if (Number.isFinite(significant)) parts.push(`有意 ${significant} 件`);
+    const dropped = Number(selection?.dropped_nonfinite);
+    if (Number.isFinite(dropped) && dropped > 0) {
+      parts.push(`検定不能 ${dropped} 件を除外`);
+    }
+    parts.push("hover / zoom / legend filter");
+    return parts.join(" · ");
+  }
+
+  return { findPlot, traces, shapes, note };
 }));

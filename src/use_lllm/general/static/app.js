@@ -627,7 +627,7 @@ function appendVolcanoPlot(bubble, item) {
   const heading = document.createElement("div"); heading.className = "chat-plot-heading";
   const title = document.createElement("strong"); title.textContent = volcano.title;
   const note = document.createElement("span");
-  note.textContent = volcanoNote(volcano);
+  note.textContent = window.GeneralVolcanoPlot.note(volcano);
   heading.append(title, note);
   const plot = document.createElement("div"); plot.className = "chat-pca-plot";
   plot.setAttribute("aria-label", `${volcano.title} Plotly chart`);
@@ -654,25 +654,6 @@ function appendVolcanoPlot(bubble, item) {
     });
   };
   if (typeof requestAnimationFrame === "function") requestAnimationFrame(draw); else draw();
-}
-
-// 間引きが起きたことを画面に出す。全点が描かれていると誤解させないため。
-function volcanoNote(volcano) {
-  const parts = [];
-  const selection = volcano.selection;
-  if (selection && Number(selection.total) > Number(selection.plotted)) {
-    parts.push(`${selection.plotted} / ${selection.total} points（ns を間引き）`);
-  } else {
-    parts.push(`${volcano.points.length} points`);
-  }
-  if (selection && Number.isFinite(Number(selection.significant_total))) {
-    parts.push(`有意 ${selection.significant_total} 件`);
-  }
-  if (selection && Number(selection.dropped_nonfinite) > 0) {
-    parts.push(`検定不能 ${selection.dropped_nonfinite} 件を除外`);
-  }
-  parts.push("hover / zoom / legend filter");
-  return parts.join(" · ");
 }
 
 function renderApproval(event) {

@@ -103,4 +103,54 @@ const oddSig = helpers.findPlot(JSON.stringify({
 }));
 assert.equal(oddSig.points[0].sig, "ns");
 
+// --- note: 点数の欠けを理由ごとに正しく言い分けること ---
+// 間引き無し・除外無し
+assert.equal(
+  helpers.note(plot),
+  "4 points · 有意 2 件 · hover / zoom / legend filter",
+);
+
+// 非有限値の除外だけ（間引きは起きていない）→「間引き」と言ってはいけない
+const droppedOnly = helpers.findPlot(JSON.stringify({
+  ...payload,
+  selection: {
+    total: 714, plotted: 708, significant_total: 75, significant_plotted: 75,
+    ns_total: 633, ns_plotted: 633, max_points: 3000, dropped_nonfinite: 6,
+  },
+}));
+const droppedNote = helpers.note(droppedOnly);
+assert.equal(
+  droppedNote,
+  "708 / 714 points · 有意 75 件 · 検定不能 6 件を除外 · hover / zoom / legend filter",
+);
+assert.ok(!droppedNote.includes("間引き"), "間引きが起きていないのに間引きと言わないこと");
+
+// 間引きが起きた場合は件数の推移を出す
+const thinned = helpers.findPlot(JSON.stringify({
+  ...payload,
+  selection: {
+    total: 12483, plotted: 3000, significant_total: 218, significant_plotted: 218,
+    ns_total: 12105, ns_plotted: 2782, max_points: 3000, dropped_nonfinite: 160,
+  },
+}));
+assert.equal(
+  helpers.note(thinned),
+  "3000 / 12483 points · ns を 12105→2782 に間引き · 有意 218 件"
+  + " · 検定不能 160 件を除外 · hover / zoom / legend filter",
+);
+
+// selection が無い payload でも壊れない
+const noSelection = helpers.findPlot(JSON.stringify({ ...payload, selection: undefined }));
+assert.equal(helpers.note(noSelection), "4 points · hover / zoom / legend filter");
+
+// 有意0件は「有意 0 件」と明示する（欠落させると差がないのか未検定か区別できない）
+const zeroSig = helpers.findPlot(JSON.stringify({
+  ...payload,
+  selection: {
+    total: 4, plotted: 4, significant_total: 0, significant_plotted: 0,
+    ns_total: 4, ns_plotted: 4, max_points: 3000, dropped_nonfinite: 0,
+  },
+}));
+assert.match(helpers.note(zeroSig), /有意 0 件/);
+
 console.log("general volcano plot helper tests passed");
