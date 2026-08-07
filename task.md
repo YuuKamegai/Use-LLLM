@@ -195,3 +195,35 @@ Claude DesktopのようにローカルLLMと会話でき、GUIだけでMCPと知
 - packaged runtime context smoke: launcher-health、Azure上限欄、暫定値表示コード、モデルプロファイル同梱を確認
 - packaged runtime security smoke: 未信頼Host=400、tokenなしPOST=403、cross-origin POST=403、任意Azure送信先=400、DPAPI envelope保存、平文API keyなし、公開API keyなしを確認
 - Authenticode: `NotSigned`（配布署名前の既知残件）
+
+## 2026-08-07 全プロットのクライアント描画統一（volcano新設 / EIC multi対応）
+
+- [x] `volcano-plot.js` 新設。`lipidmix.volcano.v1` を sig ごと3トレースで描画、しきい値を破線に、
+      hover に feature 名。配色は `save_volcano_figure` の matplotlib と一致（up `#c0392b` /
+      down `#2471a3` / ns `#95a5a6`）。
+- [x] `eic-plot.js` を single/multi 2スキーマ対応に。`lipidmix.eic.multi.v1` がスキーマ判定で
+      弾かれ、複数物質オーバーレイが webUI に描画されず PNG 保存に頼るしかなかった問題を解消。
+      multi では物質メタを hovertemplate に焼き込み、apex 注釈を返す。
+- [x] `app.js` に `appendVolcanoPlot` を配線。EIC は 8 系列超で凡例を右外側の縦並びに切替。
+- [x] `policy.py` / `mcp_state_policy.py` を ms-data-parser の実ツール名へ同期。旧名 `eicaef_*` の
+      ままで現行 EIC ツールと `arf_plot_volcano` が UNKNOWN 扱い＝毎回承認待ちになり描画に
+      到達できなかった。撤去済み `arf_re_pca` / `pai2_get_top_metabolites` 等も削除。
+- [x] `arf_differential` は群指定引数依存のため `replay_safe` にせず、`differential_result` を
+      provides するだけに。`arf_plot_volcano` の自動状態復元は `StateRestoreBlocked` になる。
+
+### Verification
+
+- `.venv\Scripts\python.exe -m pytest -q`: 134 passed / 8 subtests（既知のStarletteDeprecationWarning 1件）
+- `.venv\Scripts\python.exe -m ruff check src tests`: passed
+- `node --check`（app.js / eic-plot.js / volcano-plot.js）: passed
+- Markdown / PCA / EIC / volcano / artifact JavaScript helper tests: passed
+- 実データ検証（`C:\Users\yuu18\datasets\2_lipidome_lcms\NEG`, 714特徴 / 60サンプル）:
+  - サーバ側ペイロード生成 → クライアント JS ヘルパ通し: volcano 708点(ns633/down50/up25)＋破線3本、
+    EIC single 4トレース610点、EIC multi 12トレース2279点＋注釈12 を確認
+  - webUI 実描画（Plotly SVG 生成を確認）: volcano / EIC single / EIC multi の3枚
+  - `arf_plot_volcano` 実行では PNG が0枚、`save_volcano_figure` の明示呼び出し時のみ
+    `reports/figures/verify-volcano_volcano.png`（38,751 bytes）が作られることを確認
+  - MCP ツール数 39→40（`arf_plot_volcano` 登録）
+- 実データ検証で発覚し修正: 図の説明文が「間引き」と「検定不能で除外」を混同していた
+  （`ns_plotted == ns_total` で間引き無しなのに「ns を間引き」と表示）。`note()` を
+  `volcano-plot.js` へ移してテストで固定。
