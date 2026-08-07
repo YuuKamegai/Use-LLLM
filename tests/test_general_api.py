@@ -127,6 +127,12 @@ class FakeRegistry:
             "承認が必要です。" if not approved else "承認済みです。",
         )
 
+    def is_replay_safe(self, name):
+        return True
+
+    def may_write_files(self, name):
+        return True
+
     async def call_tool(
         self,
         name,

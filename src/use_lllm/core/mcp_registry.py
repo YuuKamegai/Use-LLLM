@@ -27,7 +27,17 @@ from use_lllm.core.mcp_client import (
     list_all_tools,
 )
 from use_lllm.core.mcp_oauth import MemoryTokenStorage, oauth_callbacks, oauth_storages
-from use_lllm.core.policy import ToolDecision, ToolPolicyError, decide_server_tool
+from use_lllm.core.policy import (
+    ToolDecision,
+    ToolPolicyError,
+    decide_server_tool,
+)
+from use_lllm.core.policy import (
+    is_replay_safe as policy_is_replay_safe,
+)
+from use_lllm.core.policy import (
+    writes_outside_server as policy_writes_outside_server,
+)
 from use_lllm.core.settings_store import MCPServerSpec
 
 
@@ -511,6 +521,22 @@ class MCPRegistry:
             if tool.name == tool_name:
                 return RegisteredTool(server_name, tool)
         raise MCPConnectionError(f"接続中MCPに未知のツールです: {qualified_name}")
+
+    def is_replay_safe(self, qualified_name: str) -> bool:
+        """サーバが宣言した annotations から、同じ引数での再実行が安全かを判定する。"""
+        try:
+            tool = self.get_tool(qualified_name)
+        except MCPConnectionError:
+            return False
+        return policy_is_replay_safe(tool.description.annotations)
+
+    def may_write_files(self, qualified_name: str) -> bool:
+        """そのツールがサーバ外へ書くと宣言しているか（成果物回収の対象判定）。"""
+        try:
+            tool = self.get_tool(qualified_name)
+        except MCPConnectionError:
+            return False
+        return policy_writes_outside_server(tool.description.annotations)
 
     def decide(
         self,

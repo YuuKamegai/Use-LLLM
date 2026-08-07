@@ -83,6 +83,12 @@ class FakeRegistry:
             "allowed" if allowed else "approval required",
         )
 
+    def is_replay_safe(self, name):
+        return True
+
+    def may_write_files(self, name):
+        return True
+
     async def call_tool(
         self,
         name,
@@ -302,39 +308,6 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         result = await loop.chat(self.session["id"], "繰り返して")
         self.assertEqual(result["status"], "step_limit")
         self.assertEqual(len(registry.calls), 2)
-
-    async def test_reconnect_replays_parser_before_differential(self) -> None:
-        parser = "ms-data-parser::arf_parser"
-        re_pca = "ms-data-parser::arf_differential"
-        ollama = FakeOllama(
-            [
-                response(tool=parser, arguments={"file_path": "C:/data/test.arf"}),
-                response("loaded"),
-                response(tool=re_pca, arguments={"min_intensity": 10}),
-                response("re-pca complete"),
-            ]
-        )
-        registry = FakeRegistry(
-            {
-                parser: (ToolSafety.READ_ONLY, True),
-                re_pca: (ToolSafety.READ_ONLY, True),
-            }
-        )
-        loop = GeneralAgentLoop(ollama, self.store, registry)
-
-        await loop.chat(self.session["id"], "ARFを読み込んで")
-        registry.generation = 2
-        result = await loop.chat(self.session["id"], "PCAを再実行して")
-
-        self.assertEqual(result["content"], "re-pca complete")
-        self.assertEqual(
-            [item[0] for item in registry.calls],
-            [parser, parser, re_pca],
-        )
-        ledger = self.store.list_tool_invocations(self.session["id"])
-        replays = [item for item in ledger if item["replay_of_id"] is not None]
-        self.assertEqual(len(replays), 1)
-        self.assertEqual(replays[0]["tool_name"], parser)
 
 
 if __name__ == "__main__":

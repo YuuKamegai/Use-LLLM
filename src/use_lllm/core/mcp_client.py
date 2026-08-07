@@ -1,4 +1,4 @@
-"""Protocol-level client for the local ms-data-parser MCP server."""
+"""Protocol-level client for a local MCP server."""
 
 from __future__ import annotations
 
@@ -157,7 +157,7 @@ class MCPClient:
         except MCPConnectionError:
             raise
         except Exception as exc:
-            raise MCPConnectionError("ms-data-parser MCPとのstdio通信に失敗しました") from exc
+            raise MCPConnectionError("MCPサーバーとのstdio通信に失敗しました") from exc
 
     async def inspect_server(self) -> MCPServerSnapshot:
         """Initialize the server and dynamically retrieve its complete tool set."""
@@ -168,7 +168,7 @@ class MCPClient:
                     initialized = await session.initialize()
                     tools = await list_all_tools(session)
         except TimeoutError as exc:
-            raise MCPConnectionError("ms-data-parser MCPの初期化がタイムアウトしました") from exc
+            raise MCPConnectionError("MCPサーバーの初期化がタイムアウトしました") from exc
 
         return MCPServerSnapshot(
             server_name=initialized.serverInfo.name,

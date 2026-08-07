@@ -80,6 +80,17 @@ def is_replay_safe(annotations: Mapping[str, Any] | None) -> bool:
     return annotations.get("readOnlyHint") is True or annotations.get("idempotentHint") is True
 
 
+def writes_outside_server(annotations: Mapping[str, Any] | None) -> bool:
+    """サーバの外（ファイル・ネットワーク）に副作用を出すと宣言しているか。
+
+    PNG などの成果物を拾う対象を絞るのに使う。宣言が無いツールは False
+    （何も書かないと仮定するのではなく、拾いに行かないという安全側の既定）。
+    """
+    if annotations is None:
+        return False
+    return annotations.get("readOnlyHint") is False
+
+
 def decide_server_tool(
     server_name: str,
     tool_name: str,

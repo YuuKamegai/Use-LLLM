@@ -43,6 +43,12 @@ class LocalMCPRegistry:
     def decide(self, name, *, approved=False, network_mode="offline"):
         return ToolDecision(name, ToolSafety.READ_ONLY, True, False, "read-only")
 
+    def is_replay_safe(self, name):
+        return True
+
+    def may_write_files(self, name):
+        return True
+
     async def call_tool(
         self,
         name,

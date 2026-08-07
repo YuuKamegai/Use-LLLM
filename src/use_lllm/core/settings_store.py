@@ -17,8 +17,6 @@ from use_lllm.core.config import (
 from use_lllm.core.endpoints import PROVIDER_OLLAMA, TRUST_LOOPBACK, Endpoint
 from use_lllm.core.secret_protection import protect_secret, unprotect_secret
 
-MS_DATA_PARSER = "ms-data-parser"
-
 
 @dataclass(frozen=True, slots=True)
 class MCPServerSpec:

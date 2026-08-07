@@ -13,14 +13,9 @@ from use_lllm.core.audit import AuditLogger
 from use_lllm.core.context_memory import ContextAssembly, ContextMemoryManager
 from use_lllm.core.mcp_client import MCPToolResult
 from use_lllm.core.mcp_registry import MCPRegistry
-from use_lllm.core.mcp_state_policy import (
-    StateRestoreBlocked,
-    build_replay_plan,
-    indicates_missing_state,
-    rule_for,
-)
 from use_lllm.core.ollama import OllamaClient
 from use_lllm.core.sessions import SessionStore
+from use_lllm.core.tool_result_contract import MissingState, read_missing_state
 
 SYSTEM_PROMPT = """あなたはローカルファーストの汎用アシスタントです。
 MCPツール名は server::tool 形式です。ユーザーがtool部分だけを指定した場合も、末尾が一致する名前空間付きツールを選んでください。
@@ -39,13 +34,16 @@ GENERAL_SESSION_TITLE_LIMIT = 38
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MAX_TOOL_PNG_BYTES = 20 * 1024 * 1024
 MAX_TOOL_PNG_ARTIFACTS = 4
-PNG_ARTIFACT_TOOLS = frozenset({"save_pca_figure", "save_volcano_figure", "save_eic_figure"})
 WINDOWS_ABSOLUTE_PNG_PATH = re.compile(r'(?i)(?:[a-z]:[\\/]|\\\\)[^<>"\r\n]*?\.png')
 
 
 class RegistryLike(Protocol):
     def ollama_tools(
-        self, query: str | None = None, *, limit: int = 24, excluded: set[str] | None = None
+        self,
+        query: str | None = None,
+        *,
+        limit: int | None = None,
+        excluded: set[str] | None = None,
     ) -> list[dict[str, Any]]: ...
 
     def decide(
@@ -65,6 +63,10 @@ class RegistryLike(Protocol):
         network_mode: str = "offline",
         session_id: str | None = None,
     ) -> MCPToolResult: ...
+
+    def is_replay_safe(self, name: str) -> bool: ...
+
+    def may_write_files(self, name: str) -> bool: ...
 
 
 class GeneralAgentLoop:
@@ -209,9 +211,13 @@ class GeneralAgentLoop:
     ) -> MCPToolResult:
         """Copy PNGs produced by known figure-save tools into session storage."""
 
-        tool_name = qualified_name.rsplit("::", 1)[-1]
-        if result.is_error or tool_name not in PNG_ARTIFACT_TOOLS:
+        # 以前は特定サーバの図保存ツール名を直接3件持っていた。
+        # 汎用クライアントとして、サーバ自身の annotations だけで判断する。
+        # 読み取り専用ツールの出力にたまたま現れたパスは拾わない。
+        if result.is_error or not self.registry.may_write_files(qualified_name):
             return result
+
+        tool_name = qualified_name.rsplit("::", 1)[-1]
 
         blocks = list(result.content)
         captured_hashes = {
@@ -295,12 +301,11 @@ class GeneralAgentLoop:
             )
             result = self._capture_png_artifacts(session_id, qualified_name, result)
             content = self._tool_content(result)
-            if not result.is_error and indicates_missing_state(qualified_name, content):
+            if not result.is_error and read_missing_state(content) is not None:
+                # 契約上のエラー。サーバは isError を立てられない（SDK 制約）ので
+                # クライアント側で立て直し、監査と LLM に「失敗」として見せる。
                 result = MCPToolResult(
-                    result.tool_name,
-                    True,
-                    result.content,
-                    result.structured_content,
+                    result.tool_name, True, result.content, result.structured_content
                 )
             message_id = None
             if add_message:
@@ -326,71 +331,116 @@ class GeneralAgentLoop:
             self.sessions.fail_tool_invocation(invocation_id, str(exc))
             raise
 
-    async def _restore_mcp_state(
+    def _replay_source(self, session_id: str, qualified_name: str) -> dict[str, Any] | None:
+        """本セッションで成功した、その名前の最後の呼び出しを返す。"""
+        found = None
+        for item in self.sessions.list_tool_invocations(session_id, include_replays=False):
+            if (
+                item.get("tool_name") == qualified_name
+                and item.get("status") == "complete"
+                and not item.get("is_error")
+            ):
+                found = item
+        return found
+
+    async def _recover_missing_state(
         self,
         session_id: str,
-        target_tool: str,
+        qualified_name: str,
+        missing: MissingState,
         *,
         network_mode: str,
-    ) -> bool:
-        server_name = self._server_name(target_tool)
-        generation = await self._ensure_registry_session(session_id, server_name)
-        if generation == 0:
-            return True
-        session = self._general_session(session_id)
-        generations = dict(session["state"].get("mcp_generations", {}))
-        if int(generations.get(server_name, 0)) == generation:
-            return True
-        if not rule_for(target_tool).requires:
-            return True
-        invocations = self.sessions.list_tool_invocations(session_id, include_replays=False)
-        try:
-            plan = build_replay_plan(target_tool, invocations)
-        except StateRestoreBlocked as exc:
+    ) -> str | None:
+        """required_tools の候補を順に試して状態を復元する。復元できたツール名を返す。
+
+        required_tools は OR の代替候補。サーバが宣言した annotations で
+        リプレイ安全性を判断し、引数はセッション履歴に記録されたものをそのまま使う。
+        LLM に再実行させると引数が変わって解析条件が黙って変わりうるため、
+        引数の同一性はここで担保する。
+
+        候補が複数あり得るケースでは、リスト順ではなく本セッションで
+        最後に成功した呼び出し（invocation id が最大のもの）を選ぶ。ユーザーが
+        直前に見ていたのはその状態のはずで、より古い候補を復元すると
+        別の状態を「同じもの」として見せてしまう。
+        """
+        server_name = self._server_name(qualified_name)
+        best_target: str | None = None
+        best_source: dict[str, Any] | None = None
+        for bare in missing.required_tools:
+            target = f"{server_name}::{bare}"
+            if not self.registry.is_replay_safe(target):
+                continue
+            source = self._replay_source(session_id, target)
+            if source is None:
+                continue
+            if best_source is None or int(source["id"]) > int(best_source["id"]):
+                best_target = target
+                best_source = source
+        if best_target is None or best_source is None:
+            return None
+        replayed = await self._call_and_record(
+            session_id,
+            best_target,
+            dict(best_source["arguments"]),
+            approved=True,
+            network_mode=network_mode,
+            replay_of_id=int(best_source["id"]),
+            add_message=False,
+        )
+        if replayed.is_error:
+            return None
+        return best_target
+
+    async def _maybe_recover_and_retry(
+        self,
+        session_id: str,
+        qualified_name: str,
+        arguments: dict[str, Any],
+        result: MCPToolResult,
+        *,
+        approved: bool,
+        network_mode: str,
+    ) -> MCPToolResult:
+        """missing_state なら状態を復元して1回だけリトライする。
+
+        リトライは1段のみ。リトライ後の結果はこの関数を通らないので、
+        復旧の復旧は起きない。
+        """
+        if not result.is_error:
+            return result
+        missing = read_missing_state(self._tool_content(result))
+        if missing is None:
+            return result
+        recovered = await self._recover_missing_state(
+            session_id, qualified_name, missing, network_mode=network_mode
+        )
+        if recovered is None:
             self.sessions.append_event(
                 session_id,
-                "mcp_state_restore_blocked",
-                {"tool": target_tool, "reason": str(exc)},
+                "mcp_state_recovery_failed",
+                {
+                    "tool": qualified_name,
+                    "state": missing.state,
+                    "required_tools": list(missing.required_tools),
+                },
                 status="skipped",
             )
-            return False
-        replayed: list[int] = []
-        for invocation in plan:
-            replay_tool = str(invocation["tool_name"])
-            if not rule_for(replay_tool).replay_safe:
-                raise StateRestoreBlocked(f"安全に再実行できないMCPツールです: {replay_tool}")
-            await self._call_and_record(
-                session_id,
-                replay_tool,
-                dict(invocation["arguments"]),
-                approved=True,
-                network_mode=network_mode,
-                replay_of_id=int(invocation["id"]),
-                add_message=False,
-            )
-            replayed.append(int(invocation["id"]))
-        generations[server_name] = generation
-        self.sessions.update_session(session_id, state_patch={"mcp_generations": generations})
-        if replayed:
-            self.sessions.append_event(
-                session_id,
-                "mcp_state_restored",
-                {
-                    "server_name": server_name,
-                    "generation": generation,
-                    "replayed_invocation_ids": replayed,
-                },
-            )
-        return True
-
-    def _mark_mcp_state_live(self, session_id: str, qualified_name: str, generation: int) -> None:
-        if generation == 0:
-            return
-        server_name = self._server_name(qualified_name)
-        session = self._general_session(session_id)
-        generations = dict(session["state"].get("mcp_generations", {}))
-        generations[server_name] = generation
-        self.sessions.update_session(session_id, state_patch={"mcp_generations": generations})
+            return result
+        self.sessions.append_event(
+            session_id,
+            "mcp_state_recovered",
+            {"tool": qualified_name, "state": missing.state, "replayed": recovered},
+        )
+        self.sessions.add_message(
+            session_id,
+            "tool",
+            f"[自動復旧] {recovered} を記録済みの引数で再実行して状態を復元しました。"
+            f"直前のエラーは解消済みです。続けて {qualified_name} を再実行します。",
+            {"tool_name": qualified_name, "recovery": True},
+        )
+        return await self._call_and_record(
+            session_id, qualified_name, arguments, approved=approved, network_mode=network_mode
+        )
 
     async def chat(
         self, session_id: str, message: str, *, metadata: dict[str, Any] | None = None
@@ -589,13 +639,18 @@ class GeneralAgentLoop:
                 "arguments": arguments,
                 "step": step,
             }
-            state_ready = await self._restore_mcp_state(
-                session_id, qualified_name, network_mode=network_mode
-            )
             result = await self._call_and_record(
                 session_id,
                 qualified_name,
                 arguments,
+                approved=False,
+                network_mode=network_mode,
+            )
+            result = await self._maybe_recover_and_retry(
+                session_id,
+                qualified_name,
+                arguments,
+                result,
                 approved=False,
                 network_mode=network_mode,
             )
@@ -607,11 +662,6 @@ class GeneralAgentLoop:
                 has_structured_content=result.structured_content is not None,
                 parent_event_id=decision_event,
             )
-            if not result.is_error and (state_ready or not rule_for(qualified_name).requires):
-                generation = await self._ensure_registry_session(
-                    session_id, self._server_name(qualified_name)
-                )
-                self._mark_mcp_state_live(session_id, qualified_name, generation)
             yield {
                 "type": "tool_result",
                 "tool": qualified_name,
@@ -739,13 +789,18 @@ class GeneralAgentLoop:
                     },
                 }
 
-            state_ready = await self._restore_mcp_state(
-                session_id, qualified_name, network_mode=network_mode
-            )
             result = await self._call_and_record(
                 session_id,
                 qualified_name,
                 arguments,
+                approved=False,
+                network_mode=network_mode,
+            )
+            result = await self._maybe_recover_and_retry(
+                session_id,
+                qualified_name,
+                arguments,
+                result,
                 approved=False,
                 network_mode=network_mode,
             )
@@ -757,11 +812,6 @@ class GeneralAgentLoop:
                 has_structured_content=result.structured_content is not None,
                 parent_event_id=decision_event,
             )
-            if not result.is_error and (state_ready or not rule_for(qualified_name).requires):
-                generation = await self._ensure_registry_session(
-                    session_id, self._server_name(qualified_name)
-                )
-                self._mark_mcp_state_live(session_id, qualified_name, generation)
 
         self.sessions.append_event(
             session_id,
@@ -799,11 +849,18 @@ class GeneralAgentLoop:
         if approved:
             decision = self.registry.decide(name, approved=True, network_mode=network_mode)
             decision_event = self.audit.record_tool_decision(session_id, name, arguments, decision)
-            state_ready = await self._restore_mcp_state(session_id, name, network_mode=network_mode)
             result = await self._call_and_record(
                 session_id,
                 name,
                 arguments,
+                approved=True,
+                network_mode=network_mode,
+            )
+            result = await self._maybe_recover_and_retry(
+                session_id,
+                name,
+                arguments,
+                result,
                 approved=True,
                 network_mode=network_mode,
             )
@@ -815,11 +872,6 @@ class GeneralAgentLoop:
                 has_structured_content=result.structured_content is not None,
                 parent_event_id=decision_event,
             )
-            if not result.is_error and (state_ready or not rule_for(name).requires):
-                generation = await self._ensure_registry_session(
-                    session_id, self._server_name(name)
-                )
-                self._mark_mcp_state_live(session_id, name, generation)
             status = "complete"
         else:
             self.sessions.add_message(
