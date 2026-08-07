@@ -27,11 +27,25 @@ def envelope(state, tools, message="先に実行してください"):
 
 
 class RecordingRegistry:
-    """呼び出し順を記録し、指定回数だけ missing_state を返すフェイク。"""
+    """呼び出し順を記録し、指定回数だけ missing_state を返すフェイク。
 
-    def __init__(self, *, replay_safe: set[str], fail_once: dict[str, str]):
+    ``fail_once`` はその名前への最初の呼び出しだけ envelope を返す（以降は
+    ``ok:<name>``）。``always_fail`` は呼ばれるたびに同じ envelope を返し続ける。
+    「1回だけ失敗して次は必ず成功する」フィクスチャではリトライが常に成功して
+    しまい、単段リトライと再帰的リカバリを区別できないテストがある
+    （``test_retry_is_single_level``）ため、両方を用意する。
+    """
+
+    def __init__(
+        self,
+        *,
+        replay_safe: set[str],
+        fail_once: dict[str, str] | None = None,
+        always_fail: dict[str, str] | None = None,
+    ):
         self._replay_safe = replay_safe
-        self._fail_once = dict(fail_once)
+        self._fail_once = dict(fail_once or {})
+        self._always_fail = dict(always_fail or {})
         self.calls: list[tuple[str, dict]] = []
 
     def ollama_tools(self, query=None, *, limit=None, excluded=None):
@@ -50,8 +64,11 @@ class RecordingRegistry:
         self, name, arguments=None, *, approved=False, network_mode="offline", session_id=None
     ):
         self.calls.append((name, dict(arguments or {})))
-        body = self._fail_once.pop(name, None)
-        text = body if body is not None else f"ok:{name}"
+        if name in self._always_fail:
+            text = self._always_fail[name]
+        else:
+            body = self._fail_once.pop(name, None)
+            text = body if body is not None else f"ok:{name}"
         return MCPToolResult(name, False, ({"type": "text", "text": text},), None)
 
 
@@ -125,8 +142,8 @@ class MissingStateRecoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(result.is_error)
 
-    async def test_picks_the_first_usable_alternative(self) -> None:
-        """required_tools は OR。使える最初の候補を選ぶ。"""
+    async def test_uses_an_alternative_when_only_one_is_usable(self) -> None:
+        """required_tools は OR。使える候補が1つしかなければそれを選ぶ。"""
         registry = RecordingRegistry(
             replay_safe={"srv::second"},
             fail_once={"srv::save": envelope("plot", ["first", "second"])},
@@ -145,23 +162,71 @@ class MissingStateRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.is_error)
         self.assertIn(("srv::second", {"n": 1}), registry.calls)
 
+    async def test_recency_beats_list_order_when_both_candidates_are_usable(self) -> None:
+        """required_tools の順序ではなく、本セッションで直近に成功した候補を選ぶ。
+
+        両方が replay-safe かつ両方に成功履歴がある場合、リストで先に書かれた
+        候補ではなく、より最近に成功した方を復元する。古い候補を復元すると、
+        ユーザーが最後に見ていたのとは別の状態を「同じもの」として提示して
+        しまう —— これはこのタスクが閉じたのと同じ種類のバグなので、
+        リスト順に戻る退行をこのテストで検出できなければならない。
+        """
+        registry = RecordingRegistry(
+            replay_safe={"srv::first", "srv::second"},
+            fail_once={"srv::save": envelope("plot", ["first", "second"])},
+        )
+        loop = self.loop(registry)
+        sid = self.session["id"]
+        # "first" が先に成功するが、リストでは先頭。"second" は後から成功し、
+        # リストでは2番目 —— リスト順と直近成功の結論が食い違う配置。
+        await loop._call_and_record(
+            sid, "srv::first", {"n": 1}, approved=True, network_mode="offline"
+        )
+        await loop._call_and_record(
+            sid, "srv::second", {"n": 2}, approved=True, network_mode="offline"
+        )
+        result = await loop._call_and_record(
+            sid, "srv::save", {}, approved=True, network_mode="offline"
+        )
+        result = await loop._maybe_recover_and_retry(
+            sid, "srv::save", {}, result, approved=True, network_mode="offline"
+        )
+        self.assertFalse(result.is_error)
+        # 復旧のために呼ばれたのは "first" ではなく、より最近成功した "second"。
+        replay_call_index = 3  # first, second, save(失敗), ここが復旧のreplay
+        self.assertEqual(registry.calls[replay_call_index], ("srv::second", {"n": 2}))
+        self.assertEqual(sum(1 for name, _ in registry.calls if name == "srv::first"), 1)
+        self.assertEqual(sum(1 for name, _ in registry.calls if name == "srv::second"), 2)
+
     async def test_retry_is_single_level(self) -> None:
-        """復旧後もまた missing_state なら、復旧の復旧はしない。"""
+        """復旧後もまた missing_state なら、復旧の復旧はしない。
+
+        fail_once（1回だけ失敗して以降は必ず成功）だとリトライが必ず成功して
+        しまい、単段リトライと「復旧の復旧」（再帰的なリカバリ）を区別できない。
+        always_fail で毎回 missing_state を返し続けるレジストリを使い、
+        (1) 最終結果が依然としてエラーであること、(2) prep の再実行が
+        ちょうど1回（＝復旧1回分）だけであることの両方を確認する。
+        """
         registry = RecordingRegistry(
             replay_safe={"srv::prep"},
-            fail_once={},
+            always_fail={"srv::pca": envelope("matrix", ["prep"])},
         )
-        registry._fail_once = {"srv::pca": envelope("matrix", ["prep"])}
         loop = self.loop(registry)
         sid = self.session["id"]
         await loop._call_and_record(sid, "srv::prep", {}, approved=True, network_mode="offline")
         result = await loop._call_and_record(
             sid, "srv::pca", {}, approved=True, network_mode="offline"
         )
-        await loop._maybe_recover_and_retry(
+        result = await loop._maybe_recover_and_retry(
             sid, "srv::pca", {}, result, approved=True, network_mode="offline"
         )
+        self.assertTrue(result.is_error)
+        # 事前のセットアップ呼び出し1回 + 復旧での再実行1回 = 2回。
+        # これが3回以上になっていれば、リトライの結果が再び復旧に回されている
+        # （＝単段のはずのリトライが再帰している）ことを意味する。
         self.assertEqual(sum(1 for name, _ in registry.calls if name == "srv::prep"), 2)
+        # pca 自体もセットアップの失敗1回 + リトライの失敗1回 = 2回で止まる。
+        self.assertEqual(sum(1 for name, _ in registry.calls if name == "srv::pca"), 2)
 
     async def test_a_plain_error_is_left_alone(self) -> None:
         registry = RecordingRegistry(replay_safe=set(), fail_once={})
