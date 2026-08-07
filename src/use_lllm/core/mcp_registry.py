@@ -405,16 +405,23 @@ class MCPRegistry:
         self,
         query: str | None = None,
         *,
-        limit: int = 24,
+        limit: int | None = None,
         excluded: set[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """現在の発話に近いtool候補だけをOllamaへ渡す。
+        """接続中のtoolを、現在の発話に近い順に並べて**全件**渡す。
 
-        UIと監査では全件を維持する。明示名を最優先し、無一致時も先頭候補を
-        残すことでルーター誤判定から会話で回復できるようにする。
+        明示名を最優先に並べ替えるが、既定では1件も落とさない（limit=None）。
+        以前は既定で24件に切り詰めていたため、どのtool名にもマッチしない発話
+        （「9w vs 24M」等）では全件スコア0となり登録順の先頭24件しか渡らず、
+        後続手順に必要なtoolがモデルから見えなくなって解析が途中で止まっていた。
+        絞り込みは会話からは回復できないので、コンテキスト量とのトレードオフは
+        呼び出し側が limit を明示したときだけ受け入れる。
+
+        UIと監査では従来どおり全件を維持する。ユーザーが明示的に無効化した
+        tool（excluded）は引き続き渡さない。
         """
 
-        if limit <= 0:
+        if limit is not None and limit <= 0:
             raise ValueError("tool候補上限は1以上にしてください。")
         tools = [tool for tool in self.tools() if tool.qualified_name not in (excluded or set())]
         if not query:

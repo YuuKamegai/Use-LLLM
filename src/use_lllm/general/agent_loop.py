@@ -28,6 +28,12 @@ MCPツール名は server::tool 形式です。ユーザーがtool部分だけ�
 ツール結果、推測、未確認事項を区別し、ユーザーの承認が必要な操作を実行済みと主張しないでください。
 既定は日本語で簡潔に回答してください。"""
 
+# 1回の発話で連鎖できるツール実行の段数。脂質omicsの1手順は
+# 「一覧で群を確認 → 前処理 → 差次的解析 → 描画」のように複数ツールに分かれるため、
+# 6段では「進めて」の1往復ごとに上限へ当たって停止していた（general_step_limit）。
+# 暴走を止める安全弁としては機能させたいので無制限にはしない。
+DEFAULT_MAX_STEPS = 20
+
 DEFAULT_GENERAL_SESSION_TITLE = "新しいチャット"
 GENERAL_SESSION_TITLE_LIMIT = 38
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -70,7 +76,7 @@ class GeneralAgentLoop:
         *,
         audit: AuditLogger | None = None,
         memory: ContextMemoryManager | None = None,
-        max_steps: int = 6,
+        max_steps: int = DEFAULT_MAX_STEPS,
     ) -> None:
         if max_steps <= 0:
             raise ValueError("max_stepsは1以上にしてください。")
