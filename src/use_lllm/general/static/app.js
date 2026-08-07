@@ -524,6 +524,7 @@ function renderMessage(item) {
   if (item.role === "tool" && window.GeneralArtifacts) window.GeneralArtifacts.append(bubble, item);
   appendPcaPlot(bubble, item);
   appendEicPlot(bubble, item);
+  appendVolcanoPlot(bubble, item);
   article.append(bubble);
   return article;
 }
@@ -589,14 +590,58 @@ function appendEicPlot(bubble, item) {
   plot.setAttribute("aria-label", `${eic.title} Plotly chart`);
   card.append(heading, plot); bubble.append(card);
 
+  // 多系列（複数物質オーバーレイ）では横並び凡例が潰れるので右外側の縦並びにする。
+  const manySeries = eic.series.length > 8;
   const draw = () => {
     Promise.resolve(Plotly.react(
       plot,
       window.GeneralEicPlot.traces(eic),
       {
-        margin: { l: 68, r: 22, t: 18, b: 52 },
+        margin: { l: 68, r: manySeries ? 200 : 22, t: 18, b: 52 },
         xaxis: { title: eic.xLabel, zeroline: false, gridcolor: "#ebe8e1" },
         yaxis: { title: eic.yLabel, rangemode: "tozero", zeroline: false, gridcolor: "#ebe8e1" },
+        legend: manySeries
+          ? { orientation: "v", x: 1.02, xanchor: "left", y: 1, font: { size: 9 } }
+          : { orientation: "h", y: -0.22 },
+        annotations: window.GeneralEicPlot.annotations(eic),
+        hovermode: "closest",
+        paper_bgcolor: "transparent",
+        plot_bgcolor: "#ffffff",
+        font: { family: '"Segoe UI Variable", "Yu Gothic UI", sans-serif', color: "#3d3b36", size: 11 },
+      },
+      { responsive: true, displaylogo: false, scrollZoom: true },
+    )).then(() => {
+      scrollConversationToEnd();
+    });
+  };
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(draw); else draw();
+}
+
+function appendVolcanoPlot(bubble, item) {
+  if (item.role !== "tool" || item.metadata?.is_error || !window.Plotly || !window.GeneralVolcanoPlot) return;
+  const volcano = window.GeneralVolcanoPlot.findPlot(item.content);
+  if (!volcano?.points?.length) return;
+
+  bubble.classList.add("has-plot");
+  const card = document.createElement("section"); card.className = "chat-plot-card";
+  const heading = document.createElement("div"); heading.className = "chat-plot-heading";
+  const title = document.createElement("strong"); title.textContent = volcano.title;
+  const note = document.createElement("span");
+  note.textContent = volcanoNote(volcano);
+  heading.append(title, note);
+  const plot = document.createElement("div"); plot.className = "chat-pca-plot";
+  plot.setAttribute("aria-label", `${volcano.title} Plotly chart`);
+  card.append(heading, plot); bubble.append(card);
+
+  const draw = () => {
+    Promise.resolve(Plotly.react(
+      plot,
+      window.GeneralVolcanoPlot.traces(volcano),
+      {
+        margin: { l: 58, r: 22, t: 18, b: 52 },
+        xaxis: { title: volcano.xLabel, zeroline: false, gridcolor: "#ebe8e1" },
+        yaxis: { title: volcano.yLabel, rangemode: "tozero", zeroline: false, gridcolor: "#ebe8e1" },
+        shapes: window.GeneralVolcanoPlot.shapes(volcano),
         legend: { orientation: "h", y: -0.22 },
         hovermode: "closest",
         paper_bgcolor: "transparent",
@@ -609,6 +654,25 @@ function appendEicPlot(bubble, item) {
     });
   };
   if (typeof requestAnimationFrame === "function") requestAnimationFrame(draw); else draw();
+}
+
+// 間引きが起きたことを画面に出す。全点が描かれていると誤解させないため。
+function volcanoNote(volcano) {
+  const parts = [];
+  const selection = volcano.selection;
+  if (selection && Number(selection.total) > Number(selection.plotted)) {
+    parts.push(`${selection.plotted} / ${selection.total} points（ns を間引き）`);
+  } else {
+    parts.push(`${volcano.points.length} points`);
+  }
+  if (selection && Number.isFinite(Number(selection.significant_total))) {
+    parts.push(`有意 ${selection.significant_total} 件`);
+  }
+  if (selection && Number(selection.dropped_nonfinite) > 0) {
+    parts.push(`検定不能 ${selection.dropped_nonfinite} 件を除外`);
+  }
+  parts.push("hover / zoom / legend filter");
+  return parts.join(" · ");
 }
 
 function renderApproval(event) {
