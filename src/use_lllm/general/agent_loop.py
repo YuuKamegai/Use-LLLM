@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+from pathlib import Path
 from typing import Any, AsyncIterator, Protocol
+from urllib.parse import quote
 
 from use_lllm.core.audit import AuditLogger
 from use_lllm.core.context_memory import ContextAssembly, ContextMemoryManager
@@ -27,6 +30,11 @@ MCPツール名は server::tool 形式です。ユーザーがtool部分だけ�
 
 DEFAULT_GENERAL_SESSION_TITLE = "新しいチャット"
 GENERAL_SESSION_TITLE_LIMIT = 38
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+MAX_TOOL_PNG_BYTES = 20 * 1024 * 1024
+MAX_TOOL_PNG_ARTIFACTS = 4
+PNG_ARTIFACT_TOOLS = frozenset({"save_pca_figure", "save_volcano_figure", "save_eic_figure"})
+WINDOWS_ABSOLUTE_PNG_PATH = re.compile(r'(?i)(?:[a-z]:[\\/]|\\\\)[^<>"\r\n]*?\.png')
 
 
 class RegistryLike(Protocol):
@@ -123,6 +131,7 @@ class GeneralAgentLoop:
         content: str,
         metadata: dict[str, Any],
         prompt_eval_count: int | None = None,
+        eval_count: int | None = None,
     ) -> dict[str, Any]:
         usage = await self.memory.context_usage(
             assembled,
@@ -130,6 +139,7 @@ class GeneralAgentLoop:
             response_content=content,
             response_metadata=metadata,
             prompt_eval_count=prompt_eval_count,
+            completion_eval_count=eval_count,
         )
         self.sessions.update_session(session_id, state_patch={"context_usage": usage})
         return usage
@@ -185,6 +195,69 @@ class GeneralAgentLoop:
             session_id=session_id,
         )
 
+    def _capture_png_artifacts(
+        self,
+        session_id: str,
+        qualified_name: str,
+        result: MCPToolResult,
+    ) -> MCPToolResult:
+        """Copy PNGs produced by known figure-save tools into session storage."""
+
+        tool_name = qualified_name.rsplit("::", 1)[-1]
+        if result.is_error or tool_name not in PNG_ARTIFACT_TOOLS:
+            return result
+
+        blocks = list(result.content)
+        captured_hashes = {
+            str(block.get("sha256", ""))
+            for block in blocks
+            if block.get("type") == "artifact_image"
+        }
+        captured_count = 0
+        for match in WINDOWS_ABSOLUTE_PNG_PATH.finditer(result.text):
+            if captured_count >= MAX_TOOL_PNG_ARTIFACTS:
+                break
+            source = Path(match.group(0).strip().rstrip("'"))
+            try:
+                size = source.stat().st_size
+                if not source.is_file() or size <= 0 or size > MAX_TOOL_PNG_BYTES:
+                    continue
+                data = source.read_bytes()
+            except OSError:
+                continue
+            if len(data) != size or not data.startswith(PNG_SIGNATURE):
+                continue
+
+            artifact = self.sessions.save_artifact(session_id, source.name, data)
+            if artifact["sha256"] in captured_hashes:
+                continue
+            captured_hashes.add(artifact["sha256"])
+            artifact_name = Path(artifact["path"]).name
+            blocks.append(
+                {
+                    "type": "artifact_image",
+                    "mimeType": "image/png",
+                    "name": source.name,
+                    "alt": f"{tool_name} generated image",
+                    "url": (
+                        f"./api/sessions/{quote(session_id, safe='')}/artifacts/"
+                        f"{quote(artifact_name, safe='')}"
+                    ),
+                    "sha256": artifact["sha256"],
+                    "size": artifact["size"],
+                }
+            )
+            captured_count += 1
+
+        if tuple(blocks) == result.content:
+            return result
+        return MCPToolResult(
+            result.tool_name,
+            result.is_error,
+            tuple(blocks),
+            result.structured_content,
+        )
+
     async def _call_and_record(
         self,
         session_id: str,
@@ -214,6 +287,7 @@ class GeneralAgentLoop:
                 approved=approved,
                 network_mode=network_mode,
             )
+            result = self._capture_png_artifacts(session_id, qualified_name, result)
             content = self._tool_content(result)
             if not result.is_error and indicates_missing_state(qualified_name, content):
                 result = MCPToolResult(
@@ -439,6 +513,7 @@ class GeneralAgentLoop:
                     content=content,
                     metadata=response_metadata,
                     prompt_eval_count=prompt_eval_count,
+                    eval_count=eval_count,
                 )
                 self.sessions.update_session(session_id, status="ready")
                 yield {
@@ -466,6 +541,7 @@ class GeneralAgentLoop:
                 content=content,
                 metadata={**response_metadata, "tool_calls": [call]},
                 prompt_eval_count=prompt_eval_count,
+                eval_count=eval_count,
             )
             decision = self.registry.decide(qualified_name, network_mode=network_mode)
             decision_event = self.audit.record_tool_decision(
@@ -595,6 +671,7 @@ class GeneralAgentLoop:
                     content=content,
                     metadata=response_metadata,
                     prompt_eval_count=response.prompt_eval_count,
+                    eval_count=response.eval_count,
                 )
                 self.sessions.update_session(session_id, status="ready")
                 return {
@@ -622,6 +699,7 @@ class GeneralAgentLoop:
                 content=response.content,
                 metadata={**response_metadata, "tool_calls": [call]},
                 prompt_eval_count=response.prompt_eval_count,
+                eval_count=response.eval_count,
             )
             decision = self.registry.decide(qualified_name, network_mode=network_mode)
             decision_event = self.audit.record_tool_decision(

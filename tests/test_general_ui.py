@@ -18,6 +18,7 @@ class GeneralUiContractTests(unittest.TestCase):
     def test_static_ui_contains_chat_settings_and_approval_contracts(self) -> None:
         html = (STATIC / "index.html").read_text(encoding="utf-8")
         script = (STATIC / "app.js").read_text(encoding="utf-8")
+        artifact_renderer = (STATIC / "artifact-renderer.js").read_text(encoding="utf-8")
         styles = (STATIC / "styles.css").read_text(encoding="utf-8")
 
         for element_id in (
@@ -27,6 +28,10 @@ class GeneralUiContractTests(unittest.TestCase):
             "chat-form",
             "settings-panel",
             "endpoint-form",
+            "endpoint-provider",
+            "endpoint-api-key",
+            "endpoint-context-window",
+            "setup-use-azure",
             "server-form",
             "tool-list",
             "context-meter",
@@ -55,8 +60,21 @@ class GeneralUiContractTests(unittest.TestCase):
         self.assertIn(".context-meter.warning", styles)
         self.assertIn(".context-meter.critical", styles)
         self.assertIn(".message-content .katex-display", styles)
+        self.assertIn('block.type === "artifact_image"', artifact_renderer)
+        self.assertIn('image.loading = "lazy"', artifact_renderer)
+        self.assertIn(".tool-image-link", styles)
         self.assertIn('id="setup-overlay"', html)
         self.assertIn("async function pullSetupModel()", script)
+        self.assertIn("async function configureAzureFromSetup()", script)
+        self.assertIn("async function testEndpoint(name)", script)
+        self.assertIn('api_key: $("#endpoint-api-key").value.trim() || null', script)
+        self.assertIn('context_window: $("#endpoint-context-window").value', script)
+        self.assertIn("usage.context_window_confirmed === false", script)
+        self.assertIn('meta[name="use-lllm-csrf-token"]', script)
+        self.assertIn('result["X-Use-LLLM-CSRF"] = csrfToken', script)
+        self.assertIn('name="use-lllm-csrf-token"', html)
+        self.assertIn('$("#endpoint-trust").disabled = azure', script)
+        self.assertIn('$("#endpoint-url").value === "http://127.0.0.1:11434"', script)
         self.assertIn('api("setup/complete"', script)
         self.assertIn('const workspace = $("#chat-workspace")', script)
         self.assertIn("workspace.scrollTop = workspace.scrollHeight", script)
@@ -84,7 +102,7 @@ class GeneralUiContractTests(unittest.TestCase):
                 session_store=store,
                 settings_path=Path(raw) / "settings.json",
             )
-            with TestClient(app) as client:
+            with TestClient(app, base_url="http://127.0.0.1") as client:
                 index = client.get("/")
                 script = client.get("/static/app.js")
                 styles = client.get("/static/styles.css")
@@ -97,6 +115,8 @@ class GeneralUiContractTests(unittest.TestCase):
                 launcher_health = client.get("/api/launcher-health")
         self.assertEqual(index.status_code, 200)
         self.assertIn("Use-LLLM General", index.text)
+        self.assertNotIn("__USE_LLLM_CSRF_TOKEN__", index.text)
+        self.assertEqual(index.headers["cache-control"], "no-store")
         self.assertEqual(script.status_code, 200)
         self.assertIn("initialize();", script.text)
         self.assertEqual(styles.status_code, 200)
@@ -129,7 +149,7 @@ class GeneralUiContractTests(unittest.TestCase):
                     session_store=store,
                     settings_path=Path(raw) / "settings.json",
                 )
-                with TestClient(app) as client:
+                with TestClient(app, base_url="http://127.0.0.1") as client:
                     health = client.get("/api/launcher-health")
         self.assertEqual(health.status_code, 200)
         self.assertFalse(health.json()["static_ready"])

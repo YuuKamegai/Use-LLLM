@@ -101,6 +101,28 @@ class FakeRegistry:
         )
 
 
+class SavedPngRegistry(FakeRegistry):
+    def __init__(self, source: Path):
+        super().__init__({})
+        self.source = source
+
+    async def call_tool(
+        self,
+        name,
+        arguments=None,
+        *,
+        approved=False,
+        network_mode="offline",
+        session_id=None,
+    ):
+        return MCPToolResult(
+            name,
+            False,
+            ({"type": "text", "text": f"PCA図を保存: {self.source}"},),
+            None,
+        )
+
+
 class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -122,7 +144,9 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["role"] for item in messages], ["user", "assistant"])
         usage = self.store.get_session(self.session["id"])["state"]["context_usage"]
         self.assertEqual(usage["prompt_tokens"], 80)
-        self.assertEqual(usage["measurement_source"], "ollama_prompt_plus_response_estimate")
+        self.assertEqual(usage["measurement_source"], "provider_usage")
+        self.assertEqual(usage["completion_tokens"], 6)
+        self.assertEqual(usage["accuracy"], "measured")
 
     async def test_default_title_uses_first_user_message(self) -> None:
         session = self.store.create_session("新しいチャット", surface="general")
@@ -141,6 +165,54 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         await loop.chat(self.session["id"], "最初の質問")
 
         self.assertEqual(self.store.get_session(self.session["id"])["title"], "chat")
+
+    async def test_lipidmix_saved_png_is_copied_into_session_artifacts(self) -> None:
+        source = Path(self.temp.name) / "pca-result.png"
+        png = b"\x89PNG\r\n\x1a\n" + b"test-image"
+        source.write_bytes(png)
+        loop = GeneralAgentLoop(FakeOllama([]), self.store, SavedPngRegistry(source))
+
+        captured = await loop._call_and_record(
+            self.session["id"],
+            "lipidmix::save_pca_figure",
+            {},
+            approved=True,
+            network_mode="offline",
+        )
+
+        self.assertEqual(len(captured.content), 2)
+        image = captured.content[1]
+        self.assertEqual(image["type"], "artifact_image")
+        self.assertEqual(image["mimeType"], "image/png")
+        self.assertTrue(image["url"].startswith(f"./api/sessions/{self.session['id']}/"))
+        self.assertNotIn(str(source), image["url"])
+        stored = list((self.store.artifact_root / self.session["id"]).glob("*-pca-result.png"))
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0].read_bytes(), png)
+        message = self.store.list_messages(self.session["id"])[-1]
+        self.assertEqual(message["metadata"]["content_blocks"][1], image)
+
+    async def test_png_capture_rejects_unknown_tools_and_invalid_files(self) -> None:
+        source = Path(self.temp.name) / "not-really.png"
+        source.write_bytes(b"not a png")
+        result = MCPToolResult(
+            "lipidmix::save_pca_figure",
+            False,
+            ({"type": "text", "text": f"保存: {source}"},),
+            None,
+        )
+        loop = GeneralAgentLoop(FakeOllama([]), self.store, FakeRegistry({}))
+
+        invalid = loop._capture_png_artifacts(
+            self.session["id"], "lipidmix::save_pca_figure", result
+        )
+        unknown = loop._capture_png_artifacts(
+            self.session["id"], "lipidmix::some_other_tool", result
+        )
+
+        self.assertIs(invalid, result)
+        self.assertIs(unknown, result)
+        self.assertEqual(list((self.store.artifact_root / self.session["id"]).iterdir()), [])
 
     async def test_default_title_is_not_replaced_by_second_message(self) -> None:
         session = self.store.create_session("新しいチャット", surface="general")

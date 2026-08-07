@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import html
 import json
+import secrets
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +18,18 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from use_lllm.core.azure_openai import (
+    AzureOpenAIClient,
+    AzureOpenAIConfig,
+    normalize_azure_openai_endpoint,
+)
 from use_lllm.core.config import ConfigurationError, OllamaConfig
-from use_lllm.core.endpoints import Endpoint, EndpointRegistry
+from use_lllm.core.endpoints import (
+    PROVIDER_AZURE_OPENAI,
+    PROVIDER_OLLAMA,
+    Endpoint,
+    EndpointRegistry,
+)
 from use_lllm.core.knowledge import KnowledgeStore
 from use_lllm.core.mcp_client import MCPConnectionError
 from use_lllm.core.mcp_oauth import oauth_callbacks
@@ -32,9 +45,14 @@ from use_lllm.core.settings_store import (
 )
 from use_lllm.core.setup_store import SETUP_VERSION, SetupStore
 from use_lllm.general.agent_loop import DEFAULT_GENERAL_SESSION_TITLE, GeneralAgentLoop
+from use_lllm.general.security import (
+    CSRF_PLACEHOLDER,
+    LocalAPISecurityMiddleware,
+)
 
 STATIC_ROOT = Path(__file__).with_name("static")
 VENDOR_ROOT = STATIC_ROOT.parent.parent / "static" / "vendor"
+MAX_SESSION_PNG_BYTES = 20 * 1024 * 1024
 
 
 def _static_ui_ready() -> bool:
@@ -63,6 +81,9 @@ class EndpointBody(StrictModel):
     base_url: str
     trust: str = "loopback"
     default_model: str | None = None
+    provider: str = PROVIDER_OLLAMA
+    api_key: str | None = None
+    context_window: int | None = Field(default=None, ge=2048)
 
 
 class MCPServerBody(StrictModel):
@@ -123,6 +144,7 @@ class SetupModelBody(StrictModel):
 
 RegistryFactory = Callable[[tuple[MCPServerSpec, ...]], MCPRegistry]
 OllamaFactory = Callable[[OllamaConfig], OllamaClient]
+AzureFactory = Callable[[AzureOpenAIConfig], AzureOpenAIClient]
 
 
 class GeneralRuntime:
@@ -133,6 +155,7 @@ class GeneralRuntime:
         *,
         registry_factory: RegistryFactory,
         ollama_factory: OllamaFactory,
+        azure_factory: AzureFactory,
     ) -> None:
         self.sessions = sessions
         self.knowledge = KnowledgeStore(sessions.base_directory)
@@ -140,6 +163,7 @@ class GeneralRuntime:
         self.settings_path = settings_path
         self.registry_factory = registry_factory
         self.ollama_factory = ollama_factory
+        self.azure_factory = azure_factory
         self.autostart_attempted = False
         self.settings = load_settings(settings_path)
         self._install(self.settings, persist=False)
@@ -156,16 +180,19 @@ class GeneralRuntime:
 
     def _install(self, settings: Settings, *, persist: bool) -> None:
         endpoints = self._validate(settings)
-        config = endpoints.selected().to_ollama_config()
-        ollama = self.ollama_factory(config)
+        selected = endpoints.selected()
+        if selected.provider == PROVIDER_AZURE_OPENAI:
+            model_client = self.azure_factory(selected.to_azure_openai_config())
+        else:
+            model_client = self.ollama_factory(selected.to_ollama_config())
         registry = self.registry_factory(settings.mcp_servers)
         if persist:
             save_settings(self.settings_path, settings)
         self.settings = settings
         self.endpoints = endpoints
-        self.ollama = ollama
+        self.ollama = model_client
         self.registry = registry
-        self.agent = GeneralAgentLoop(ollama, self.sessions, registry)
+        self.agent = GeneralAgentLoop(model_client, self.sessions, registry)
         self.autostart_attempted = False
 
     async def apply(self, settings: Settings) -> None:
@@ -186,10 +213,20 @@ class GeneralRuntime:
             raise ValueError("モデル名が不正です。")
         selected = self.settings.selected_endpoint
         endpoints = tuple(
-            Endpoint(item.name, item.base_url, item.trust, name) if item.name == selected else item
+            replace(item, default_model=name) if item.name == selected else item
             for item in self.settings.endpoints
         )
         await self.apply(Settings(endpoints, selected, self.settings.mcp_servers))
+
+    async def test_endpoint(self, name: str) -> dict[str, Any]:
+        endpoint = self.endpoints.get(name)
+        client = (
+            self.azure_factory(endpoint.to_azure_openai_config())
+            if endpoint.provider == PROVIDER_AZURE_OPENAI
+            else self.ollama_factory(endpoint.to_ollama_config())
+        )
+        tester = getattr(client, "test_connection", None)
+        return await tester() if tester is not None else await client.health()
 
     def public_settings(self) -> dict[str, Any]:
         return {
@@ -199,11 +236,14 @@ class GeneralRuntime:
                     "base_url": item.base_url,
                     "trust": item.trust,
                     "default_model": item.default_model,
+                    "provider": item.provider,
+                    "api_key_configured": bool(item.api_key),
+                    "context_window": item.context_window,
                 }
                 for item in self.settings.endpoints
             ],
             "selected_endpoint": self.settings.selected_endpoint,
-            "selected_remote": self.endpoints.selected().allow_lan,
+            "selected_remote": self.endpoints.selected().is_remote,
             "mcp_servers": [
                 {
                     "name": item.name,
@@ -224,12 +264,27 @@ class GeneralRuntime:
         }
 
 
-def _endpoint(body: EndpointBody) -> Endpoint:
+def _endpoint(body: EndpointBody, existing: Endpoint | None = None) -> Endpoint:
+    base_url = body.base_url.strip().rstrip("/")
+    api_key = (body.api_key or "").strip()
+    if body.provider != PROVIDER_AZURE_OPENAI:
+        api_key = ""
+    elif (
+        not api_key
+        and existing is not None
+        and existing.provider == PROVIDER_AZURE_OPENAI
+        and normalize_azure_openai_endpoint(existing.base_url)
+        == normalize_azure_openai_endpoint(base_url)
+    ):
+        api_key = existing.api_key or ""
     return Endpoint(
         name=body.name.strip(),
-        base_url=body.base_url.strip().rstrip("/"),
+        base_url=base_url,
         trust=body.trust,
         default_model=(body.default_model or "").strip() or None,
+        provider=body.provider,
+        api_key=api_key or None,
+        context_window=(body.context_window if body.provider == PROVIDER_AZURE_OPENAI else None),
     )
 
 
@@ -264,7 +319,7 @@ def _server(body: MCPServerBody, existing: MCPServerSpec | None = None) -> MCPSe
 
 
 def _raise_http(exc: Exception) -> None:
-    if isinstance(exc, (SessionNotFound, KeyError)):
+    if isinstance(exc, (SessionNotFound, KeyError, FileNotFoundError)):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if isinstance(exc, ToolPolicyError):
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -281,6 +336,7 @@ def create_general_app(
     settings_path: Path | None = None,
     registry_factory: RegistryFactory = MCPRegistry,
     ollama_factory: OllamaFactory = OllamaClient,
+    azure_factory: AzureFactory = AzureOpenAIClient,
 ) -> FastAPI:
     sessions = session_store or SessionStore()
     runtime = GeneralRuntime(
@@ -288,6 +344,7 @@ def create_general_app(
         settings_path or sessions.base_directory / "settings.json",
         registry_factory=registry_factory,
         ollama_factory=ollama_factory,
+        azure_factory=azure_factory,
     )
 
     @asynccontextmanager
@@ -299,11 +356,14 @@ def create_general_app(
             if close_all is not None:
                 await close_all()
 
+    csrf_token = secrets.token_urlsafe(32)
     app = FastAPI(title="Use-LLLM General", version="0.1.0", lifespan=lifespan)
+    app.add_middleware(LocalAPISecurityMiddleware, csrf_token=csrf_token)
     app.state.runtime = runtime
     app.state.sessions = sessions
     app.state.knowledge = runtime.knowledge
     app.state.setup = runtime.setup
+    app.state.local_api_csrf_token = csrf_token
 
     if STATIC_ROOT.is_dir():
         app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="general-static")
@@ -314,7 +374,18 @@ def create_general_app(
     async def index():
         path = STATIC_ROOT / "index.html"
         if path.is_file():
-            return FileResponse(path)
+            content = path.read_text(encoding="utf-8").replace(
+                CSRF_PLACEHOLDER, html.escape(csrf_token, quote=True)
+            )
+            return HTMLResponse(
+                content,
+                headers={
+                    "Cache-Control": "no-store",
+                    "Referrer-Policy": "no-referrer",
+                    "X-Frame-Options": "DENY",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
         return HTMLResponse("<h1>Use-LLLM General</h1>")
 
     @app.get("/api/health")
@@ -338,11 +409,12 @@ def create_general_app(
     async def status() -> dict[str, Any]:
         await runtime.ensure_autostart()
         try:
-            ollama = await runtime.ollama.health()
+            model_status = await runtime.ollama.health()
         except Exception as exc:
-            ollama = {"status": "error", "error": str(exc)}
+            model_status = {"status": "error", "error": str(exc)}
         return {
-            "ollama": ollama,
+            "model": model_status,
+            "ollama": model_status,
             "mcp": runtime.registry.statuses(),
             "tools": runtime.registry.tool_names(),
             "storage": {"database": str(sessions.database_path)},
@@ -409,6 +481,14 @@ def create_general_app(
         except Exception as exc:
             _raise_http(exc)
 
+    @app.post("/api/setup/connections")
+    async def continue_setup_in_connections() -> dict[str, Any]:
+        state = runtime.setup.mark_complete(
+            endpoint=runtime.settings.selected_endpoint,
+            model="connection-settings",
+        )
+        return {"completed": True, "state": state}
+
     @app.get("/api/settings")
     async def get_settings() -> dict[str, Any]:
         return runtime.public_settings()
@@ -432,11 +512,14 @@ def create_general_app(
     async def edit_endpoint(name: str, body: EndpointBody) -> dict[str, Any]:
         try:
             current = list(runtime.settings.endpoints)
-            if name not in {item.name for item in current}:
+            existing = next((item for item in current if item.name == name), None)
+            if existing is None:
                 raise KeyError(name)
             if body.name != name and body.name in {item.name for item in current}:
                 raise ValueError(f"エンドポイント名が重複しています: {body.name}")
-            updated = tuple(_endpoint(body) if item.name == name else item for item in current)
+            updated = tuple(
+                _endpoint(body, existing) if item.name == name else item for item in current
+            )
             selected = (
                 body.name
                 if runtime.settings.selected_endpoint == name
@@ -471,6 +554,13 @@ def create_general_app(
                 Settings(runtime.settings.endpoints, name, runtime.settings.mcp_servers)
             )
             return runtime.public_settings()
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.post("/api/endpoints/{name}/test")
+    async def test_endpoint(name: str) -> dict[str, Any]:
+        try:
+            return await runtime.test_endpoint(name)
         except Exception as exc:
             _raise_http(exc)
 
@@ -661,6 +751,30 @@ def create_general_app(
     async def get_session(session_id: str) -> dict[str, Any]:
         try:
             return general_session(session_id)
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.get("/api/sessions/{session_id}/artifacts/{name}")
+    async def get_session_artifact(session_id: str, name: str) -> FileResponse:
+        try:
+            general_session(session_id)
+            path = sessions.artifact_path(session_id, name)
+            if (
+                not path.is_file()
+                or path.suffix.lower() != ".png"
+                or not 0 < path.stat().st_size <= MAX_SESSION_PNG_BYTES
+            ):
+                raise FileNotFoundError(name)
+            with path.open("rb") as stream:
+                if stream.read(8) != b"\x89PNG\r\n\x1a\n":
+                    raise FileNotFoundError(name)
+            return FileResponse(
+                path,
+                media_type="image/png",
+                filename=path.name,
+                content_disposition_type="inline",
+                headers={"Cache-Control": "private, max-age=31536000, immutable"},
+            )
         except Exception as exc:
             _raise_http(exc)
 

@@ -125,6 +125,7 @@ button { cursor: pointer; }
 .message.streaming .avatar { animation: pulse-stream 1.2s infinite; }
 @keyframes pulse-stream { 50% { opacity: .45; } }
 .tool-image { display: block; max-width: min(100%, 720px); max-height: 520px; margin-top: 10px; border-radius: 8px; object-fit: contain; background: white; }
+.tool-image-link { display: block; width: fit-content; max-width: 100%; }
 .resource-link { display: block; margin-top: 8px; color: var(--green); }
 .bubble details { margin-top: 8px; }
 .bubble details pre { max-height: 300px; overflow: auto; white-space: pre-wrap; }

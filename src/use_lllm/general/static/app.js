@@ -1,4 +1,15 @@
 const $ = (selector) => document.querySelector(selector);
+const csrfToken = document.querySelector('meta[name="use-lllm-csrf-token"]')?.content || "";
+const unsafeMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+function requestHeaders(method = "GET", headers = {}) {
+  const result = { "Content-Type": "application/json", ...headers };
+  if (unsafeMethods.has(method.toUpperCase())) {
+    if (!csrfToken || csrfToken === "__USE_LLLM_CSRF_TOKEN__") throw new Error("ローカルAPIの起動トークンがありません。WebUIを再読み込みしてください。");
+    result["X-Use-LLLM-CSRF"] = csrfToken;
+  }
+  return result;
+}
 
 const state = {
   settings: null,
@@ -12,9 +23,11 @@ const state = {
 };
 
 async function api(path, options = {}) {
+  const { headers = {}, ...requestOptions } = options;
+  const method = requestOptions.method || "GET";
   const response = await fetch(`./api/${path.replace(/^\//, "")}`, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
+    ...requestOptions,
+    headers: requestHeaders(method, headers),
   });
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`;
@@ -60,12 +73,15 @@ function renderContextUsage() {
     return;
   }
   const percent = Math.max(0, Math.min(100, Math.round(remaining)));
+  const provisional = usage.context_window_confirmed === false;
   if (percent < 15) meter.classList.add("critical");
   else if (percent < 40) meter.classList.add("warning");
-  label.textContent = `残りコンテキスト ${percent}%`;
+  label.textContent = `${provisional ? "暫定残り" : "残りコンテキスト"} ${percent}%`;
   fill.style.width = `${percent}%`;
   const compacted = usage.summary_created ? " 古い会話は直前の応答で要約されました。" : "";
-  meter.title = `自動要約まで推定 ${formatTokenCount(usage.remaining_tokens)} / ${formatTokenCount(usage.input_budget)} tokens。使用 ${formatTokenCount(usage.used_tokens)}、モデル上限 ${formatTokenCount(usage.context_window)}。${compacted}`.trim();
+  const source = provisional ? "モデル上限未確認の暫定値。" : "";
+  const accuracy = usage.accuracy === "measured" ? "トークン使用量は実測。" : "トークン使用量は推定を含みます。";
+  meter.title = `${source}自動要約まで ${formatTokenCount(usage.remaining_tokens)} / ${formatTokenCount(usage.input_budget)} tokens。使用 ${formatTokenCount(usage.used_tokens)}、モデル上限 ${formatTokenCount(usage.context_window)}。${accuracy}${compacted}`.trim();
 }
 
 async function loadSetup() {
@@ -104,7 +120,7 @@ async function pullSetupModel() {
   if (!model) return;
   $("#setup-error").textContent = ""; $("#setup-pull-model").disabled = true;
   try {
-    const response = await fetch("./api/setup/models/pull", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }) });
+    const response = await fetch("./api/setup/models/pull", { method: "POST", headers: requestHeaders("POST"), body: JSON.stringify({ model }) });
     if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
     while (true) {
@@ -128,6 +144,17 @@ async function completeSetup() {
   finally { if (!state.setup?.completed) $("#setup-complete").disabled = false; }
 }
 
+async function configureAzureFromSetup() {
+  $("#setup-error").textContent = "";
+  try {
+    await api("setup/connections", { method: "POST" });
+    await Promise.all([loadSetup(), loadSettings()]);
+    $("#settings-panel").classList.add("open");
+    openEndpointForm(null, "azure_openai");
+    toast("Azure OpenAIの接続情報を入力してください。");
+  } catch (error) { $("#setup-error").textContent = error.message; }
+}
+
 async function loadSettings() {
   state.settings = await api("settings");
   renderEndpointBanner();
@@ -147,11 +174,12 @@ function renderEndpointBanner() {
     banner.querySelector("strong").textContent = "未設定";
     return;
   }
-  const remote = endpoint.trust === "lan_allowed";
+  const azure = endpoint.provider === "azure_openai";
+  const remote = endpoint.trust !== "loopback";
   banner.classList.toggle("remote", remote);
-  banner.querySelector("small").textContent = remote ? "LAN送信先" : "ローカル送信先";
+  banner.querySelector("small").textContent = azure ? "Azure OpenAI" : remote ? "LAN送信先" : "ローカル送信先";
   banner.querySelector("strong").textContent = `${endpoint.name} · ${endpoint.base_url} · ${endpoint.default_model || "モデル未設定"}`;
-  banner.title = remote ? `プロンプトは ${endpoint.base_url} へ送信されます` : "このPC上のOllamaへ送信します";
+  banner.title = remote ? `プロンプトとMCPツール結果は ${endpoint.base_url} へ送信されます` : "このPC上のOllamaへ送信します";
 }
 
 function actionButton(label, handler, className = "mini-button") {
@@ -175,7 +203,9 @@ function renderEndpointList() {
     const title = document.createElement("strong");
     title.textContent = item.name;
     const detail = document.createElement("small");
-    detail.textContent = `${item.base_url} · ${item.default_model || "モデル未設定"}`;
+    const provider = item.provider === "azure_openai" ? "Azure OpenAI" : "Ollama";
+    const context = item.context_window ? ` · context ${formatTokenCount(item.context_window)}` : "";
+    detail.textContent = `${provider} · ${item.base_url} · ${item.default_model || "モデル未設定"}${context}`;
     info.append(title, detail);
     const chip = document.createElement("span");
     chip.className = `state-chip${item.name === state.settings.selected_endpoint ? "" : " off"}`;
@@ -184,6 +214,7 @@ function renderEndpointList() {
     const actions = document.createElement("div");
     actions.className = "connection-actions";
     if (item.name !== state.settings.selected_endpoint) actions.append(actionButton("選択", () => selectEndpoint(item.name)));
+    actions.append(actionButton("接続テスト", () => testEndpoint(item.name)));
     actions.append(actionButton("編集", () => openEndpointForm(item)));
     actions.append(actionButton("削除", () => deleteEndpoint(item.name), "mini-button danger-text"));
     card.append(top, actions);
@@ -191,14 +222,41 @@ function renderEndpointList() {
   }
 }
 
-function openEndpointForm(item = null) {
+function updateEndpointProviderFields() {
+  const azure = $("#endpoint-provider").value === "azure_openai";
+  const creating = !$("#endpoint-original").value;
+  $("#endpoint-api-key-row").classList.toggle("hidden", !azure);
+  $("#endpoint-context-window-row").classList.toggle("hidden", !azure);
+  $("#endpoint-url").placeholder = azure ? "https://YOUR-RESOURCE.openai.azure.com" : "http://127.0.0.1:11434";
+  $("#endpoint-model").placeholder = azure ? "Azureのdeployment名" : "qwen3:14b";
+  $("#endpoint-provider-help").textContent = azure
+    ? "Azure portalのEndpoint、deployment名、API keyを入力してください。ローカルMCPはこのPCで実行されます。"
+    : "Ollamaのローカルまたは明示許可したLAN endpointを指定します。";
+  if (azure) $("#endpoint-trust").value = "cloud_allowed";
+  else if ($("#endpoint-trust").value === "cloud_allowed") $("#endpoint-trust").value = "loopback";
+  if (creating && azure && $("#endpoint-url").value === "http://127.0.0.1:11434") $("#endpoint-url").value = "";
+  if (creating && azure && $("#endpoint-model").value === "qwen3:14b") $("#endpoint-model").value = "";
+  if (creating && !azure && !$("#endpoint-url").value) $("#endpoint-url").value = "http://127.0.0.1:11434";
+  if (creating && !azure && !$("#endpoint-model").value) $("#endpoint-model").value = "qwen3:14b";
+  $("#endpoint-trust").disabled = azure;
+}
+
+function openEndpointForm(item = null, requestedProvider = null) {
   const form = $("#endpoint-form");
   form.classList.remove("hidden");
+  const provider = item?.provider || requestedProvider || "ollama";
   $("#endpoint-original").value = item?.name || "";
   $("#endpoint-name").value = item?.name || "";
-  $("#endpoint-url").value = item?.base_url || "http://127.0.0.1:11434";
-  $("#endpoint-model").value = item?.default_model || "qwen3:14b";
-  $("#endpoint-trust").value = item?.trust || "loopback";
+  $("#endpoint-provider").value = provider;
+  $("#endpoint-url").value = item?.base_url || (provider === "azure_openai" ? "" : "http://127.0.0.1:11434");
+  $("#endpoint-model").value = item?.default_model || (provider === "azure_openai" ? "" : "qwen3:14b");
+  $("#endpoint-api-key").value = "";
+  $("#endpoint-context-window").value = item?.context_window || "";
+  $("#endpoint-api-key").placeholder = item?.api_key_configured
+    ? "保存済み（同じEndpointなら空欄で保持、変更時は再入力）"
+    : "Azure OpenAI API key";
+  $("#endpoint-trust").value = item?.trust || (provider === "azure_openai" ? "cloud_allowed" : "loopback");
+  updateEndpointProviderFields();
   $("#endpoint-name").focus();
 }
 
@@ -210,12 +268,17 @@ async function saveEndpoint(event) {
     base_url: $("#endpoint-url").value.trim(),
     default_model: $("#endpoint-model").value.trim(),
     trust: $("#endpoint-trust").value,
+    provider: $("#endpoint-provider").value,
+    api_key: $("#endpoint-api-key").value.trim() || null,
+    context_window: $("#endpoint-context-window").value
+      ? Number.parseInt($("#endpoint-context-window").value, 10)
+      : null,
   };
   try {
     state.settings = await api(original ? `endpoints/${encodeURIComponent(original)}` : "endpoints", { method: original ? "PUT" : "POST", body: JSON.stringify(payload) });
     $("#endpoint-form").classList.add("hidden");
     renderEndpointBanner(); renderEndpointList(); renderServerList(); await loadTools();
-    toast("Ollamaエンドポイントを保存しました。");
+    toast("AI接続を保存しました。");
   } catch (error) { toast(error.message, true); }
 }
 
@@ -227,8 +290,15 @@ async function selectEndpoint(name) {
   } catch (error) { toast(error.message, true); }
 }
 
+async function testEndpoint(name) {
+  try {
+    const result = await api(`endpoints/${encodeURIComponent(name)}/test`, { method: "POST" });
+    toast(`${name}: ${result.status || "接続成功"}`);
+  } catch (error) { toast(error.message, true); }
+}
+
 async function deleteEndpoint(name) {
-  if (!confirm(`Ollamaエンドポイント「${name}」を削除しますか？`)) return;
+  if (!confirm(`AI接続「${name}」を削除しますか？`)) return;
   try {
     state.settings = await api(`endpoints/${encodeURIComponent(name)}`, { method: "DELETE" });
     renderEndpointBanner(); renderEndpointList();
@@ -369,13 +439,15 @@ async function updateToolPreference(name, enabled) {
 async function loadStatus() {
   try {
     const status = await api("status");
-    const ready = status.ollama.status === "ready";
+    const model = status.model || status.ollama || {};
+    const ready = ["ready", "configured"].includes(model.status);
+    const provider = model.provider === "azure_openai" ? "Azure OpenAI" : "Ollama";
     const summary = $("#system-summary");
     summary.textContent = "";
     const dot = document.createElement("span");
     dot.className = "status-dot";
     dot.style.background = ready ? "var(--green)" : "var(--amber)";
-    summary.append(dot, document.createTextNode(ready ? "Ollama準備完了" : `Ollama: ${status.ollama.status}`));
+    summary.append(dot, document.createTextNode(ready ? `${provider}準備完了` : `${provider}: ${model.status}`));
   } catch (error) { $("#system-summary").textContent = "接続状態を取得できません"; }
 }
 
@@ -578,7 +650,7 @@ async function sendMessage(event) {
   setBusy(true, "モデルが考えています");
   state.controller = new AbortController();
   try {
-    const response = await fetch(`./api/sessions/${state.current.id}/chat/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message, attachment_ids: state.attachments }), signal: state.controller.signal });
+    const response = await fetch(`./api/sessions/${state.current.id}/chat/stream`, { method: "POST", headers: requestHeaders("POST"), body: JSON.stringify({ message, attachment_ids: state.attachments }), signal: state.controller.signal });
     if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
     let streaming = null; let streamedContent = "";
@@ -713,6 +785,7 @@ function bindEvents() {
   $("#setup-refresh").addEventListener("click", loadSetup);
   $("#setup-pull-model").addEventListener("click", pullSetupModel);
   $("#setup-complete").addEventListener("click", completeSetup);
+  $("#setup-use-azure").addEventListener("click", configureAzureFromSetup);
   $("#new-session").addEventListener("click", () => createSession());
   $("#delete-session").addEventListener("click", deleteCurrentSession);
   $("#chat-form").addEventListener("submit", sendMessage);
@@ -723,6 +796,7 @@ function bindEvents() {
   $("#close-settings").addEventListener("click", () => $("#settings-panel").classList.remove("open"));
   $("#add-endpoint").addEventListener("click", () => openEndpointForm());
   $("#endpoint-form").addEventListener("submit", saveEndpoint);
+  $("#endpoint-provider").addEventListener("change", updateEndpointProviderFields);
   $("#add-server").addEventListener("click", () => openServerForm());
   $("#server-form").addEventListener("submit", saveServer);
   $("#server-preset").addEventListener("change", applyServerPreset);

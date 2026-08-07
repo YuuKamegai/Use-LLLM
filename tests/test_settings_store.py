@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from use_lllm.core.config import ConfigurationError
-from use_lllm.core.endpoints import TRUST_LAN_ALLOWED, Endpoint
+from use_lllm.core.endpoints import (
+    PROVIDER_AZURE_OPENAI,
+    TRUST_CLOUD_ALLOWED,
+    TRUST_LAN_ALLOWED,
+    Endpoint,
+)
+from use_lllm.core.secret_protection import PROTECTED_SECRET_PREFIX
 from use_lllm.core.settings_store import (
     MCPServerSpec,
     Settings,
@@ -50,6 +57,15 @@ class RoundTripTests(unittest.TestCase):
                 Endpoint(
                     name="lab", base_url="http://10.242.145.97:11434", trust=TRUST_LAN_ALLOWED
                 ),
+                Endpoint(
+                    name="azure",
+                    base_url="https://sample.openai.azure.com",
+                    trust=TRUST_CLOUD_ALLOWED,
+                    default_model="deployment-a",
+                    provider=PROVIDER_AZURE_OPENAI,
+                    api_key="secret",
+                    context_window=400_000,
+                ),
             ),
             selected_endpoint="lab",
             mcp_servers=(
@@ -65,14 +81,42 @@ class RoundTripTests(unittest.TestCase):
 
     def test_json_round_trip_is_equal(self) -> None:
         settings = self._settings()
-        self.assertEqual(settings_from_json(settings_to_json(settings)), settings)
+        payload = settings_to_json(settings)
+        azure = next(item for item in payload["endpoints"] if item["name"] == "azure")
+        self.assertNotIn("api_key", azure)
+        self.assertTrue(azure["api_key_protected"].startswith(PROTECTED_SECRET_PREFIX))
+        self.assertEqual(azure["context_window"], 400_000)
+        self.assertNotIn("secret", json.dumps(payload))
+        self.assertEqual(settings_from_json(payload), settings)
 
     def test_save_then_load_is_equal(self) -> None:
         settings = self._settings()
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "nested" / "settings.json"
             save_settings(path, settings)
+            self.assertNotIn("secret", path.read_text(encoding="utf-8"))
             self.assertEqual(load_settings(path), settings)
+
+    def test_load_migrates_legacy_plaintext_api_key_to_dpapi(self) -> None:
+        settings = self._settings()
+        legacy = settings_to_json(settings)
+        azure = next(item for item in legacy["endpoints"] if item["name"] == "azure")
+        azure.pop("api_key_protected")
+        azure["api_key"] = "legacy-plaintext-key"
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "settings.json"
+            path.write_text(json.dumps(legacy), encoding="utf-8")
+
+            loaded = load_settings(path)
+            migrated_text = path.read_text(encoding="utf-8")
+
+        loaded_azure = next(item for item in loaded.endpoints if item.name == "azure")
+        self.assertEqual(loaded_azure.api_key, "legacy-plaintext-key")
+        self.assertNotIn("legacy-plaintext-key", migrated_text)
+        migrated = json.loads(migrated_text)
+        migrated_azure = next(item for item in migrated["endpoints"] if item["name"] == "azure")
+        self.assertNotIn("api_key", migrated_azure)
+        self.assertTrue(migrated_azure["api_key_protected"].startswith(PROTECTED_SECRET_PREFIX))
 
     def test_missing_file_returns_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

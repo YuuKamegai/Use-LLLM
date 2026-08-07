@@ -4,6 +4,8 @@ import unittest
 
 from use_lllm.core.config import ConfigurationError
 from use_lllm.core.endpoints import (
+    PROVIDER_AZURE_OPENAI,
+    TRUST_CLOUD_ALLOWED,
     TRUST_LAN_ALLOWED,
     TRUST_LOOPBACK,
     Endpoint,
@@ -48,6 +50,34 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(config.base_url, "http://10.242.145.97:11434")
         self.assertEqual(config.model, "qwen3:14b")
         config.validate()  # lan_allowed なので通る
+
+    def test_azure_endpoint_requires_explicit_cloud_trust_and_builds_config(self) -> None:
+        endpoint = Endpoint(
+            name="azure",
+            base_url="https://sample.openai.azure.com/openai/v1/",
+            trust=TRUST_CLOUD_ALLOWED,
+            default_model="deployment-a",
+            provider=PROVIDER_AZURE_OPENAI,
+            api_key="secret",
+            context_window=400_000,
+        )
+
+        endpoint.validate()
+        config = endpoint.to_azure_openai_config()
+        self.assertEqual(config.base_url, "https://sample.openai.azure.com/openai/v1")
+        self.assertEqual(config.deployment, "deployment-a")
+        self.assertEqual(config.context_window, 400_000)
+
+    def test_azure_endpoint_rejects_missing_api_key(self) -> None:
+        endpoint = Endpoint(
+            name="azure",
+            base_url="https://sample.openai.azure.com",
+            trust=TRUST_CLOUD_ALLOWED,
+            default_model="deployment-a",
+            provider=PROVIDER_AZURE_OPENAI,
+        )
+        with self.assertRaisesRegex(ConfigurationError, "API key"):
+            endpoint.validate()
 
 
 class EndpointRegistryTests(unittest.TestCase):

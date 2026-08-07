@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="use-lllm-csrf-token" content="__USE_LLLM_CSRF_TOKEN__">
   <title>Use-LLLM General</title>
   <link rel="stylesheet" href="./vendor/katex.min.css">
   <link rel="stylesheet" href="./static/styles.css">
@@ -10,9 +11,9 @@
 <body>
   <section id="setup-overlay" class="setup-overlay hidden" aria-labelledby="setup-title">
     <div class="setup-card">
-      <span class="welcome-kicker">FIRST RUN · LOCAL ONLY</span>
+      <span class="welcome-kicker">FIRST RUN · CHOOSE YOUR AI</span>
       <h1 id="setup-title">Use-LLLMを準備する</h1>
-      <p>Ollamaと会話モデルを確認します。MCPサーバーは任意で、完了後に必要なものだけ接続できます。</p>
+      <p>Ollamaを準備するか、Azure OpenAIをCONNECTIONSへ登録します。MCPサーバーはどちらのAIでも利用できます。</p>
       <div class="setup-step">
         <div><span class="setup-number">1</span><strong>Ollama</strong></div>
         <p id="setup-ollama-status">確認中...</p>
@@ -36,6 +37,7 @@
       </div>
       <div class="setup-footer">
         <span id="setup-error" class="danger-text" role="alert"></span>
+        <button id="setup-use-azure" type="button" class="button secondary">Azure OpenAIを設定</button>
         <button id="setup-complete" type="button" class="button primary">準備を完了</button>
       </div>
     </div>
@@ -74,9 +76,9 @@
 
     <main class="conversation-panel">
       <section id="welcome" class="welcome-state">
-        <span class="welcome-kicker">LOCAL MODEL · LOCAL TOOLS</span>
-        <h1>ローカルLLMと、<br>道具を持った対話を。</h1>
-        <p>Ollamaモデルへ相談し、接続したMCPツールを必要なときだけ使います。書き込みや未知の操作は、あなたが確認するまで止まります。</p>
+        <span class="welcome-kicker">YOUR MODEL · LOCAL TOOLS</span>
+        <h1>選べるAIと、<br>ローカルの道具を。</h1>
+        <p>OllamaまたはAzure OpenAIへ相談し、このPCへ接続したMCPツールを必要なときだけ使います。書き込みや未知の操作は、あなたが確認するまで止まります。</p>
         <div class="starter-grid">
           <button class="starter" data-prompt="このPCで利用できるMCPツールを整理して、できることを教えてください。"><span>01</span>利用できるツールを確認</button>
           <button class="starter" data-prompt="次の作業を安全な手順に分解してください。"><span>02</span>作業手順を相談</button>
@@ -122,15 +124,19 @@
       </div>
 
       <section class="settings-section">
-        <div class="section-title"><h3>Ollama endpoints</h3><button id="add-endpoint" class="mini-button">追加</button></div>
+        <div class="section-title"><h3>AI connections</h3><button id="add-endpoint" class="mini-button">追加</button></div>
         <div id="endpoint-list" class="connection-list"></div>
         <form id="endpoint-form" class="settings-form hidden">
           <input id="endpoint-original" type="hidden">
           <label>名前<input id="endpoint-name" required placeholder="lab-server"></label>
+          <label>Provider<select id="endpoint-provider"><option value="ollama">Ollama</option><option value="azure_openai">Azure OpenAI</option></select></label>
           <label>URL<input id="endpoint-url" required placeholder="http://127.0.0.1:11434"></label>
-          <label>モデル<input id="endpoint-model" required placeholder="qwen3:14b"></label>
-          <label>信頼境界<select id="endpoint-trust"><option value="loopback">loopbackのみ</option><option value="lan_allowed">LAN送信を明示許可</option></select></label>
-          <p class="form-warning">LAN許可時、プロンプトは指定ホストへ送信されます。</p>
+          <label id="endpoint-model-label">モデル / Deployment<input id="endpoint-model" required placeholder="qwen3:14b"></label>
+          <label id="endpoint-api-key-row" class="hidden">Azure OpenAI API key<input id="endpoint-api-key" type="password" autocomplete="new-password" placeholder="編集時は空欄のままで保存済みキーを保持"></label>
+          <label id="endpoint-context-window-row" class="hidden">コンテキスト上限（任意）<input id="endpoint-context-window" type="number" min="2048" step="1" placeholder="既知モデルは自動判定"></label>
+          <label>送信許可<select id="endpoint-trust"><option value="loopback">loopbackのみ</option><option value="lan_allowed">LAN送信を明示許可</option><option value="cloud_allowed">Azureクラウド送信を許可</option></select></label>
+          <p id="endpoint-provider-help" class="muted"></p>
+          <p class="form-warning">外部接続ではプロンプトとMCPツール結果が指定先へ送信されます。API keyはブラウザへ再表示しません。</p>
           <div class="form-actions"><button type="button" class="button quiet form-cancel">取消</button><button class="button primary">保存</button></div>
         </form>
       </section>

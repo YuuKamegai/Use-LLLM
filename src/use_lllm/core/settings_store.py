@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,7 +14,8 @@ from use_lllm.core.config import (
     DEFAULT_OLLAMA_URL,
     ConfigurationError,
 )
-from use_lllm.core.endpoints import TRUST_LOOPBACK, Endpoint
+from use_lllm.core.endpoints import PROVIDER_OLLAMA, TRUST_LOOPBACK, Endpoint
+from use_lllm.core.secret_protection import protect_secret, unprotect_secret
 
 MS_DATA_PARSER = "ms-data-parser"
 
@@ -69,20 +72,32 @@ def default_settings() -> Settings:
 
 
 def _endpoint_to_json(endpoint: Endpoint) -> dict[str, Any]:
-    return {
+    payload = {
         "name": endpoint.name,
         "base_url": endpoint.base_url,
         "trust": endpoint.trust,
         "default_model": endpoint.default_model,
+        "provider": endpoint.provider,
+        "context_window": endpoint.context_window,
     }
+    if endpoint.api_key:
+        payload["api_key_protected"] = protect_secret(endpoint.api_key)
+    return payload
 
 
 def _endpoint_from_json(data: dict[str, Any]) -> Endpoint:
+    protected = data.get("api_key_protected")
+    api_key = unprotect_secret(str(protected)) if protected else data.get("api_key")
     return Endpoint(
         name=str(data["name"]),
         base_url=str(data["base_url"]),
         trust=str(data.get("trust", TRUST_LOOPBACK)),
         default_model=data.get("default_model"),
+        provider=str(data.get("provider", PROVIDER_OLLAMA)),
+        api_key=str(api_key) if api_key else None,
+        context_window=(
+            int(data["context_window"]) if isinstance(data.get("context_window"), int) else None
+        ),
     )
 
 
@@ -144,10 +159,21 @@ def load_settings(path: Path) -> Settings:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
         raise ConfigurationError(f"設定ファイルを読めません: {path}") from exc
-    return settings_from_json(raw)
+    settings = settings_from_json(raw)
+    if any(
+        isinstance(endpoint, dict) and bool(endpoint.get("api_key"))
+        for endpoint in raw.get("endpoints", [])
+    ):
+        save_settings(path, settings)
+    return settings
 
 
 def save_settings(path: Path, settings: Settings) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(settings_to_json(settings), ensure_ascii=False, indent=2)
-    path.write_text(payload, encoding="utf-8")
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    try:
+        temporary.write_text(payload, encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)

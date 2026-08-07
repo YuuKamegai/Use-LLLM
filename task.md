@@ -95,6 +95,26 @@ Claude DesktopのようにローカルLLMと会話でき、GUIだけでMCPと知
 - artifact: `dist\Use-LLLM-Setup.exe`、SHA256 `52B6E8106DBBCB5CD5C591DB00B32957607ECDC4D05C2A176D915048C4523123`
 - Authenticode: `NotSigned`（配布署名前の既知残件）
 
+## Lipidmix MCP生成PNGのチャット内表示（2026-08-07）
+
+- [x] `save_pca_figure`、`save_volcano_figure`、`save_eic_figure`のテキスト結果からWindows絶対PNGパスを検出する。
+- [x] PNGシグネチャ、20 MiB上限、最大4画像を検証し、セッション専用artifact領域へコピーする。
+- [x] 元の絶対パスをWebUIへ渡さず、同一オリジンのセッションartifact APIからPNGだけをinline配信する。
+- [x] MCP標準image blockとの後方互換を維持しつつ、保存PNGをツール結果内へ遅延表示し、原寸リンクを付ける。
+- [x] セッション再読込後も、保存済みtool messageのcontent blockから画像を再表示する。
+
+### Verification
+
+- 対象Pythonテスト: 30 passed（既知のStarletteDeprecationWarning 1件）
+- 全Pythonテスト: 125 passed / 8 subtests（既知のStarletteDeprecationWarning 1件）
+- artifact renderer Nodeテスト: passed
+- Markdown / PCA / EIC / artifact renderer Nodeテスト: passed
+- Ruff / format check / compileall / uv lock / JavaScript構文検査 / `git diff --check`: passed
+- 実ブラウザ: セッション再読込後のtool message内でPNGを正常ロード、セッションartifact URL、lazy load、原寸リンク、console warning/error 0件を確認
+- Windowsインストーラー再ビルド: `dist\Use-LLLM-Setup.exe`、SHA256 `2277F842B90CAF723F36C06253B2DE59AECD726105B718B8CBA1B9AEBF32EC3A`
+- packaged runtime smoke: `launcher-health.static_ready=true`、artifact renderer 200、`artifact_image`と同一オリジンURL検証コードの同梱を確認
+- Authenticode: `NotSigned`（配布署名前の既知残件）
+
 ## セッション残りコンテキスト表示（2026-07-15）
 
 - [x] 入力欄フッターにセッション固有の残りコンテキスト率を表示する。
@@ -137,3 +157,41 @@ Claude DesktopのようにローカルLLMと会話でき、GUIだけでMCPと知
 - Windowsインストーラー再ビルド: `dist\\Use-LLLM-Setup.exe`、SHA256 `194EFB17F147C3627F5ACC0FD364EFDA248987630EE3A7BFA5D7A1104496D84D`
 - packaged runtime smoke: `launcher-health.static_ready=true`、KaTeX JS/CSS/代表フォント200、修正版Markdown/タイトル処理を確認
 - in-app browser: 利用可能なブラウザインスタンスが0件のため未実施
+
+## Azure OpenAI接続とローカルMCP連携（2026-08-07）
+
+- [x] CONNECTIONSでOllama / Azure OpenAIを選択し、Endpoint、Deployment、API keyを設定できる。
+- [x] Azure portalのresource endpointと`/openai/v1`付きURLを同じv1 Chat Completions URLへ正規化する。
+- [x] API keyをローカル設定へ保存し、公開設定APIと編集フォームへ値を再表示しない。
+- [x] Azure送信先を`*.openai.azure.com`と`*.services.ai.azure.com`へ限定し、任意HTTPSホストへのキー送信を拒否する。
+- [x] Providerまたは実際のEndpoint変更時は保存済みAPI keyを引き継がず、再入力を必須にする。
+- [x] loopback WebUIへHost検証、same-origin検証、起動単位CSRFトークンを追加する。
+- [x] Azure API keyをWindows DPAPI CurrentUserで暗号化し、旧平文設定を読み込み時に自動移行する。
+- [x] Azureのtool call名制約に合わせて`server::tool`を送信時だけ安全な名前へ変換し、応答時に元へ戻す。
+- [x] Azureのストリーミングtool call断片を結合してから、既存の承認・ローカルMCP実行・状態復元ループへ渡す。
+- [x] ローカルMCPの実行結果とAzureの`tool_call_id`を次のAzure要求へ返し、最終応答まで継続する。
+- [x] 初回画面からOllamaを必須にせず、Azure OpenAIのCONNECTIONS設定へ進める。
+- [x] READMEへ設定手順、ローカルMCP境界、Azureへ送信される情報、API key保存上の注意を記載する。
+- [x] GPT-5.4系Azureモデルの総コンテキスト・入力・出力上限をモデル別に解決する。
+- [x] Azure接続ごとに任意のコンテキスト上限を設定し、Ollamaの動的検出と分離する。
+- [x] ストリーミング要求で`include_usage`を有効化し、prompt/completion使用量を実測する。
+- [x] 上限未確認時は残量表示を暫定値として明示する。
+
+### Verification
+
+- `uv run pytest tests -q`: 122 passed / 8 subtests（既知のStarletteDeprecationWarning 1件）
+- `uv run ruff check src tests`: passed
+- `uv run ruff format --check`（変更Pythonファイル）: passed
+- `node --check src/use_lllm/general/static/app.js`: passed
+- Markdown/PCA/EIC JavaScript helper tests: passed
+- `uv run python -m compileall -q src tests`: passed
+- `uv lock --check`: passed
+- `git diff --check`: passed
+- Azure互換HTTPモック: API key header、MCP名変換、tool call ID、ストリーミング断片結合を確認
+- Azure contextモック: GPT-5.4 miniの400k上限、260k入力予算、usage-only最終chunkを確認
+- agent-loop統合テスト: Azure tool call → ローカルMCP実行 → MCP結果をAzureへ返却 → 最終応答を確認
+- in-app browser: 起動単位トークン埋め込み、Azure設定POST、空のEndpoint/Deployment欄、password型API key欄、console warning/error 0件を確認
+- Windowsインストーラー再ビルド: `dist\Use-LLLM-Setup.exe`、SHA256 `9261F73205759B20DA7115A7212549471BD5C6481C79BC72843AA4C7E98464ED`
+- packaged runtime context smoke: launcher-health、Azure上限欄、暫定値表示コード、モデルプロファイル同梱を確認
+- packaged runtime security smoke: 未信頼Host=400、tokenなしPOST=403、cross-origin POST=403、任意Azure送信先=400、DPAPI envelope保存、平文API keyなし、公開API keyなしを確認
+- Authenticode: `NotSigned`（配布署名前の既知残件）

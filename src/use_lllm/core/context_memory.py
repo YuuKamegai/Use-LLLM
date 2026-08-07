@@ -112,10 +112,39 @@ class ContextMemoryManager:
         self.recent_user_turns = max(1, recent_user_turns)
         self._context_resolved = context_window is not None or env_window is not None
         self._context_window_source = "configured" if self._context_resolved else "fallback"
+        self._max_input_tokens: int | None = None
+        self._max_output_tokens: int | None = None
+
+    def _input_budget(self) -> int:
+        budget = max(1024, int(self.context_window * self.input_ratio))
+        if self._max_input_tokens is not None:
+            budget = min(budget, self._max_input_tokens)
+        return budget
 
     async def _resolve_context_window(self, *, refresh: bool = False) -> None:
         if self._context_resolved and not refresh:
             return
+        details_resolver = getattr(self.ollama, "context_window_details", None)
+        if details_resolver is not None:
+            try:
+                details = await details_resolver()
+            except Exception:
+                details = None
+            if isinstance(details, dict):
+                value = details.get("context_window")
+                if isinstance(value, int) and value >= 2048:
+                    self.context_window = value
+                    self._context_resolved = True
+                    self._context_window_source = str(details.get("source") or "runtime")
+                    max_input = details.get("max_input_tokens")
+                    max_output = details.get("max_output_tokens")
+                    self._max_input_tokens = (
+                        max_input if isinstance(max_input, int) and max_input > 0 else None
+                    )
+                    self._max_output_tokens = (
+                        max_output if isinstance(max_output, int) and max_output > 0 else None
+                    )
+                    return
         resolver = getattr(self.ollama, "context_window", None)
         if resolver is None:
             return
@@ -127,6 +156,8 @@ class ContextMemoryManager:
             self.context_window = value
             self._context_resolved = True
             self._context_window_source = "ollama"
+            self._max_input_tokens = None
+            self._max_output_tokens = None
 
     @staticmethod
     def _stored_message(stored: dict[str, Any]) -> dict[str, Any]:
@@ -281,7 +312,7 @@ class ContextMemoryManager:
 
         messages = render(prior)
         tool_tokens = estimate_tokens(tools)
-        input_budget = max(1024, int(self.context_window * self.input_ratio))
+        input_budget = self._input_budget()
         message_budget = max(1024, input_budget - tool_tokens)
         while estimate_tokens(messages) > message_budget:
             boundary = self._recent_boundary(raw)
@@ -323,13 +354,14 @@ class ContextMemoryManager:
         response_content: str,
         response_metadata: dict[str, Any] | None = None,
         prompt_eval_count: int | None = None,
+        completion_eval_count: int | None = None,
     ) -> dict[str, Any]:
         """Return a session-facing estimate of room left before automatic compaction."""
 
         if not self._context_resolved:
             await self._resolve_context_window(refresh=True)
         context_window = self.context_window
-        input_budget = max(1024, int(context_window * self.input_ratio))
+        input_budget = self._input_budget()
         measured_prompt = (
             prompt_eval_count
             if isinstance(prompt_eval_count, int) and prompt_eval_count >= 0
@@ -346,7 +378,16 @@ class ContextMemoryManager:
             response_item["tool_calls"] = metadata["tool_calls"]
         if metadata.get("tool_name"):
             response_item["tool_name"] = metadata["tool_name"]
-        response_tokens = estimate_tokens(response_item)
+        measured_completion = (
+            completion_eval_count
+            if isinstance(completion_eval_count, int) and completion_eval_count >= 0
+            else None
+        )
+        response_tokens = (
+            measured_completion
+            if measured_completion is not None
+            else estimate_tokens(response_item)
+        )
         used_tokens = prompt_tokens + response_tokens
         remaining_tokens = max(0, input_budget - used_tokens)
         remaining_percent = max(
@@ -357,18 +398,36 @@ class ContextMemoryManager:
             "model": model,
             "context_window": context_window,
             "context_window_source": self._context_window_source,
+            "context_window_confirmed": self._context_window_source != "fallback",
+            "max_input_tokens": self._max_input_tokens,
+            "max_output_tokens": self._max_output_tokens,
             "input_budget": input_budget,
             "used_tokens": used_tokens,
             "remaining_tokens": remaining_tokens,
             "remaining_percent": remaining_percent,
             "prompt_tokens": prompt_tokens,
-            "response_tokens_estimate": response_tokens,
+            "response_tokens_estimate": (
+                None if measured_completion is not None else response_tokens
+            ),
+            "completion_tokens": measured_completion,
             "tool_tokens_estimate": assembled.tool_tokens,
-            "accuracy": "estimated",
+            "accuracy": (
+                "measured"
+                if measured_prompt is not None and measured_completion is not None
+                else "estimated"
+            ),
             "measurement_source": (
-                "ollama_prompt_plus_response_estimate"
-                if measured_prompt is not None
-                else "local_estimate"
+                "provider_usage"
+                if measured_prompt is not None and measured_completion is not None
+                else (
+                    "provider_prompt_plus_response_estimate"
+                    if measured_prompt is not None
+                    else (
+                        "local_prompt_plus_provider_completion"
+                        if measured_completion is not None
+                        else "local_estimate"
+                    )
+                )
             ),
             "summary_created": assembled.summary_created,
         }

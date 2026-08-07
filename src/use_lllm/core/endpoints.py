@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from use_lllm.core.azure_openai import AzureOpenAIConfig
 from use_lllm.core.config import ConfigurationError, OllamaConfig, is_loopback_url
 
 TRUST_LOOPBACK = "loopback"
 TRUST_LAN_ALLOWED = "lan_allowed"
-_TRUSTS = frozenset({TRUST_LOOPBACK, TRUST_LAN_ALLOWED})
+TRUST_CLOUD_ALLOWED = "cloud_allowed"
+PROVIDER_OLLAMA = "ollama"
+PROVIDER_AZURE_OPENAI = "azure_openai"
+_TRUSTS = frozenset({TRUST_LOOPBACK, TRUST_LAN_ALLOWED, TRUST_CLOUD_ALLOWED})
+_PROVIDERS = frozenset({PROVIDER_OLLAMA, PROVIDER_AZURE_OPENAI})
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +22,9 @@ class Endpoint:
     base_url: str
     trust: str = TRUST_LOOPBACK
     default_model: str | None = None
+    provider: str = PROVIDER_OLLAMA
+    api_key: str | None = None
+    context_window: int | None = None
 
     def validate(self) -> None:
         if not self.name.strip():
@@ -27,7 +35,15 @@ class Endpoint:
             )
         if self.trust not in _TRUSTS:
             raise ConfigurationError(f"エンドポイント {self.name} のtrustが不正です: {self.trust}")
-        if self.trust == TRUST_LOOPBACK and not is_loopback_url(self.base_url):
+        if self.provider not in _PROVIDERS:
+            raise ConfigurationError(f"未対応のAI providerです: {self.provider}")
+        if self.provider == PROVIDER_OLLAMA and self.trust == TRUST_CLOUD_ALLOWED:
+            raise ConfigurationError("Ollamaではcloud_allowedを指定できません。")
+        if self.provider == PROVIDER_AZURE_OPENAI:
+            if self.trust != TRUST_CLOUD_ALLOWED:
+                raise ConfigurationError("Azure OpenAIではクラウド送信の明示許可が必要です。")
+            self.to_azure_openai_config().validate()
+        elif self.trust == TRUST_LOOPBACK and not is_loopback_url(self.base_url):
             raise ConfigurationError(
                 f"エンドポイント {self.name} はloopback指定ですが非loopback URLです。"
             )
@@ -35,6 +51,10 @@ class Endpoint:
     @property
     def allow_lan(self) -> bool:
         return self.trust == TRUST_LAN_ALLOWED
+
+    @property
+    def is_remote(self) -> bool:
+        return self.trust != TRUST_LOOPBACK
 
     def to_ollama_config(
         self, *, model: str | None = None, timeout_seconds: float = 300.0
@@ -45,6 +65,15 @@ class Endpoint:
             model=chosen,
             timeout_seconds=timeout_seconds,
             allow_lan=self.allow_lan,
+        )
+
+    def to_azure_openai_config(self, *, timeout_seconds: float = 300.0) -> AzureOpenAIConfig:
+        return AzureOpenAIConfig(
+            endpoint=self.base_url,
+            api_key=self.api_key or "",
+            deployment=(self.default_model or "").strip(),
+            timeout_seconds=timeout_seconds,
+            context_window=self.context_window,
         )
 
 

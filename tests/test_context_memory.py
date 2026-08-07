@@ -41,6 +41,16 @@ class LateLoadedSummarizer(FakeSummarizer):
         return 8192 if self.loaded else None
 
 
+class AzureProfileSummarizer(FakeSummarizer):
+    async def context_window_details(self):
+        return {
+            "context_window": 400_000,
+            "max_input_tokens": 272_000,
+            "max_output_tokens": 128_000,
+            "source": "azure_model_profile",
+        }
+
+
 class ContextMemoryTests(unittest.IsolatedAsyncioTestCase):
     def test_markdown_fenced_summary_is_normalized(self) -> None:
         parsed = parse_summary_json('```json\n{"summary":"ARFを読み込み、PCAを続行する。"}\n```')
@@ -134,7 +144,31 @@ class ContextMemoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(usage["prompt_tokens"], 600)
             self.assertGreater(usage["used_tokens"], 600)
             self.assertEqual(usage["accuracy"], "estimated")
-            self.assertEqual(usage["measurement_source"], "ollama_prompt_plus_response_estimate")
+            self.assertEqual(usage["measurement_source"], "provider_prompt_plus_response_estimate")
+
+    async def test_azure_profile_uses_260k_budget_and_provider_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = SessionStore(Path(raw) / "state")
+            session = store.create_session("azure", surface="general")
+            store.add_message(session["id"], "user", "Azure context")
+            memory = ContextMemoryManager(AzureProfileSummarizer(), store)
+            assembled = await memory.assemble(session["id"], "system", [])
+            usage = await memory.context_usage(
+                assembled,
+                model="gpt-5.4-mini-2026-03-17",
+                response_content="done",
+                prompt_eval_count=9_000,
+                completion_eval_count=1_000,
+            )
+
+            self.assertEqual(assembled.context_window, 400_000)
+            self.assertEqual(assembled.input_budget, 260_000)
+            self.assertEqual(usage["max_input_tokens"], 272_000)
+            self.assertEqual(usage["max_output_tokens"], 128_000)
+            self.assertTrue(usage["context_window_confirmed"])
+            self.assertEqual(usage["used_tokens"], 10_000)
+            self.assertEqual(usage["accuracy"], "measured")
+            self.assertEqual(usage["measurement_source"], "provider_usage")
 
     async def test_context_window_is_retried_after_model_load(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
