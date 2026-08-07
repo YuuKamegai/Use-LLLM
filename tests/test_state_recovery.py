@@ -162,10 +162,11 @@ class CycleRegistry:
 
 
 class DenyingRegistry(RecordingRegistry):
-    """is_replay_safe は真だが、registry.decide がその候補を拒否するフェイク。
+    """is_replay_safe は真だが、安全クラスが READ_ONLY でない候補を返すフェイク。
 
     idempotentHint=true だが readOnlyHint=false（＝ファイル書き込み）の
-    ツールが required_tools の代替候補に混ざっている状況を模す。
+    ツールが required_tools の代替候補に混ざっている状況を模す。悪意ある/壊れた
+    サーバが「この状態を作るには write_report を呼べ」と宣言してくる場合にあたる。
     """
 
     def __init__(self, *, denied: set[str], **kwargs) -> None:
@@ -176,6 +177,19 @@ class DenyingRegistry(RecordingRegistry):
         if name in self._denied:
             return ToolDecision(name, ToolSafety.LOCAL_WRITE, False, True, "承認が必要です。")
         return ToolDecision(name, ToolSafety.READ_ONLY, True, False, "テスト")
+
+
+class ApprovalRequiredRegistry(RecordingRegistry):
+    """安全クラスは READ_ONLY だが allowed=False を返すフェイク。
+
+    read_only_auto=False（既定）のサーバ設定にあたる。allowed でゲートすると
+    この状況で復旧機構が一度も発火しなくなるため、その退行を検出するために使う。
+    """
+
+    def decide(self, name, *, approved=False, network_mode="offline"):
+        return ToolDecision(
+            name, ToolSafety.READ_ONLY, False, True, "read-only自動化が無効のため承認が必要です。"
+        )
 
 
 class RaisingRegistry(RecordingRegistry):
@@ -453,13 +467,12 @@ class MissingStateRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     # --- FIX3: リプレイは registry.decide の判断でゲートされる -----------
 
-    async def test_replay_is_gated_by_registry_decide_not_asserted_approval(self) -> None:
-        """is_replay_safe が真でも、registry.decide が拒否すれば実行しない。
+    async def test_a_non_read_only_candidate_is_never_replayed(self) -> None:
+        """is_replay_safe が真でも、安全クラスが READ_ONLY でなければ実行しない。
 
-        旧実装は _call_and_record を approved=True 固定で呼んでいたため、
-        ここでの decide の拒否は無視されて prep がそのまま再実行され、
-        pca のリトライも成功してしまっていた（fail_once は初回だけ失敗する
-        ため）。
+        サーバが required_tools に書き込み系ツールを名指ししてきても、
+        クライアントはそれをリプレイしない。idempotentHint=true だけで
+        リプレイ安全と判定されうるので、安全クラスによる歯止めが要る。
         """
         registry = DenyingRegistry(
             denied={"srv::prep"},
@@ -478,8 +491,35 @@ class MissingStateRecoveryTests(unittest.IsolatedAsyncioTestCase):
             sid, "srv::pca", {}, result, approved=True, network_mode="offline"
         )
         self.assertTrue(result.is_error)
-        # prep はセットアップの1回のみ。decide に拒否された候補は再実行されない。
+        # prep はセットアップの1回のみ。READ_ONLY でない候補は再実行されない。
         self.assertEqual(sum(1 for name, _ in registry.calls if name == "srv::prep"), 1)
+
+    async def test_recovery_still_runs_when_read_only_auto_is_disabled(self) -> None:
+        """read_only_auto=False（既定）でも read-only 候補の復旧は走る。
+
+        リプレイの可否を decide(...).allowed で判定すると、read_only_auto=False の
+        サーバでは read-only 候補まで弾かれ、復旧機構が一度も発火しなくなる。
+        allowed は「モデルが選んだ呼び出しを承認なしで走らせるか」の設定であり、
+        本セッションで既に成功した呼び出しを同じ引数で復元する行為とは別の判断軸。
+        この退行を二度と戻さないための回帰テスト。
+        """
+        registry = ApprovalRequiredRegistry(
+            replay_safe={"srv::prep"},
+            fail_once={"srv::pca": envelope("matrix", ["prep"])},
+        )
+        loop = self.loop(registry)
+        sid = self.session["id"]
+        await loop._call_and_record(
+            sid, "srv::prep", {"normalize": "median"}, approved=True, network_mode="offline"
+        )
+        result = await loop._call_and_record(
+            sid, "srv::pca", {}, approved=True, network_mode="offline"
+        )
+        result = await loop._maybe_recover_and_retry(
+            sid, "srv::pca", {}, result, approved=True, network_mode="offline"
+        )
+        self.assertFalse(result.is_error, "read_only_auto=False で復旧が発火していない")
+        self.assertIn(("srv::prep", {"normalize": "median"}), registry.calls[1:])
 
     # --- FIX2: リプレイ中の例外はターンを落とさず復旧失敗に縮退する -------
 

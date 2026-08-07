@@ -14,6 +14,7 @@ from use_lllm.core.context_memory import ContextAssembly, ContextMemoryManager
 from use_lllm.core.mcp_client import MCPToolResult
 from use_lllm.core.mcp_registry import MCPRegistry
 from use_lllm.core.ollama import OllamaClient
+from use_lllm.core.policy import ToolSafety
 from use_lllm.core.sessions import SessionStore
 from use_lllm.core.tool_result_contract import MissingState, read_missing_state
 
@@ -369,16 +370,19 @@ class GeneralAgentLoop:
         理由にはしない。失敗はイベントとして記録し、呼び出し元には None を
         返して次の候補（またはあきらめ）に委ねる。
 
-        approved は常に False を渡す。この直前で registry.decide(..., approved=False)
-        が許可を出した候補だけがここに到達するため（FIX3）、ここで改めて
-        True を主張して承認判定を上書きしない。
+        approved=True を渡す。ここへ到達するのは呼び出し元が
+        「安全クラス READ_ONLY」かつ「本セッションで成功実績あり」に絞った候補だけで
+        （FIX3）、その2条件はユーザーが既にこの呼び出しの実行を許可したことを意味する。
+        同じ引数での再実行に改めて承認を求める先がループの途中には無いため、ここでは
+        承認済みとして扱う。書き込み系・破壊系・ネットワーク系は呼び出し元の
+        安全クラス判定で既に除かれている。
         """
         try:
             return await self._call_and_record(
                 session_id,
                 target,
                 arguments,
-                approved=False,
+                approved=True,
                 network_mode=network_mode,
                 replay_of_id=replay_of_id,
                 add_message=False,
@@ -454,10 +458,18 @@ class GeneralAgentLoop:
         直前に見ていたのはその状態のはずで、より古い候補を復元すると
         別の状態を「同じもの」として見せてしまう。
 
-        候補ごとに registry.decide(approved=False) で現在のポリシー判断
-        （read_only_auto・network_mode・disabled_tools 相当の承認要件）を
-        確認し、許可されない候補は「承認を主張して実行」するのではなく
-        使えないものとして次の候補に進む（FIX3）。
+        候補は**安全クラスが READ_ONLY のものだけ**に絞る（FIX3）。
+        read-only 以外（書き込み・破壊・外部ネットワーク）は、サーバが
+        required_tools に名指ししてきても実行しない。悪意ある/壊れたサーバが
+        「この状態を作るには write_report を呼べ」と宣言してもリプレイされない。
+
+        判定に decide(...).allowed を使ってはいけない。allowed は read_only_auto
+        （＝**モデルが選んだ**呼び出しを承認なしで走らせるか）に従うため、既定の
+        read_only_auto=False では read-only 候補まで弾かれ、復旧機構が一度も
+        発火しなくなる。リプレイはモデルが選んだ呼び出しではなく、**ユーザーが
+        既に本セッションで実行を許可した呼び出し**（成功実績が候補の前提条件）を
+        同じ引数でコードが復元する行為なので、別の判断軸で扱う。
+        書き込み系を止める役目は allowed ではなく安全クラスが担う。
 
         候補自身が missing_state を返した場合は、depth を1つ増やして
         自分自身を再帰的に呼び出し、その前提を復旧してから候補を再実行する
@@ -479,8 +491,10 @@ class GeneralAgentLoop:
         candidates.sort(key=lambda item: item[0], reverse=True)
 
         for _, target, source in candidates:
+            # 安全クラスだけで判定する。allowed を見ると read_only_auto=False（既定）で
+            # read-only 候補まで弾かれ、復旧が永久に発火しない。docstring 参照。
             decision = self.registry.decide(target, approved=False, network_mode=network_mode)
-            if not decision.allowed:
+            if decision.safety is not ToolSafety.READ_ONLY:
                 continue
             replayed = await self._replay_producer(
                 session_id, target, source, network_mode=network_mode, depth=depth
