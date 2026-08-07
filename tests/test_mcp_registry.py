@@ -124,7 +124,7 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
     async def test_session_scoped_connections_preserve_and_isolate_server_state(self) -> None:
         tools = [
             FakeTool("arf_parser", {"type": "object"}),
-            FakeTool("arf_re_pca", {"type": "object"}),
+            FakeTool("arf_pca_preprocessed", {"type": "object"}),
         ]
         opened = []
         closed = []
@@ -165,10 +165,10 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
             registry.call_tool("ms-data-parser::arf_parser", {}, session_id="session-a")
         )
         same_session = await asyncio.create_task(
-            registry.call_tool("ms-data-parser::arf_re_pca", {}, session_id="session-a")
+            registry.call_tool("ms-data-parser::arf_pca_preprocessed", {}, session_id="session-a")
         )
         other_session = await asyncio.create_task(
-            registry.call_tool("ms-data-parser::arf_re_pca", {}, session_id="session-b")
+            registry.call_tool("ms-data-parser::arf_pca_preprocessed", {}, session_id="session-b")
         )
 
         self.assertEqual(same_session.text, "pca")

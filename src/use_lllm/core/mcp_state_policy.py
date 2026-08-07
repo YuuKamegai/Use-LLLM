@@ -28,9 +28,6 @@ RULES: dict[str, ToolStateRule] = {
         provides=("preprocessed_matrix",),
         replay_safe=True,
     ),
-    "ms-data-parser::arf_re_pca": ToolStateRule(
-        requires=("arf_dataset",), provides=("pca_result",), replay_safe=True
-    ),
     "ms-data-parser::arf_pca_preprocessed": ToolStateRule(
         requires=("preprocessed_matrix",),
         provides=("pca_result",),
@@ -39,9 +36,23 @@ RULES: dict[str, ToolStateRule] = {
     "ms-data-parser::arf_list_tags": ToolStateRule(requires=("arf_dataset",)),
     "ms-data-parser::arf_list_classes": ToolStateRule(requires=("arf_dataset",)),
     "ms-data-parser::arf_list_sample_roles": ToolStateRule(requires=("arf_dataset",)),
-    "ms-data-parser::arf_differential": ToolStateRule(requires=("arf_dataset",)),
+    # arf_differential は群指定引数に依存するため replay_safe にしない。無引数の
+    # 再実行では同じ差次的結果を再現できず、別条件の図を「同じ結果」として
+    # 保存・解釈してしまうため。
+    "ms-data-parser::arf_differential": ToolStateRule(
+        requires=("arf_dataset",), provides=("differential_result",)
+    ),
+    "ms-data-parser::arf_plot_volcano": ToolStateRule(
+        requires=("differential_result",)
+    ),
+    "ms-data-parser::save_volcano_figure": ToolStateRule(
+        requires=("differential_result",)
+    ),
     "ms-data-parser::save_pca_figure": ToolStateRule(requires=("pca_result",)),
-    "ms-data-parser::eicaef_plot_chromatograms": ToolStateRule(
+    "ms-data-parser::eic_plot_chromatograms": ToolStateRule(
+        provides=("eic_plot",), replay_safe=True
+    ),
+    "ms-data-parser::eic_plot_compounds": ToolStateRule(
         provides=("eic_plot",), replay_safe=True
     ),
     "ms-data-parser::save_eic_figure": ToolStateRule(requires=("eic_plot",)),
@@ -62,8 +73,9 @@ def indicates_missing_state(tool_name: str, result_text: str) -> bool:
     return any(
         marker in result_text
         for marker in (
-            "先に eicaef_plot_chromatograms",
+            "先に eic_plot_chromatograms",
             "先に arf_parser",
+            "先に arf_differential",
             "PCA結果がありません",
             "データを読み込んでください",
         )

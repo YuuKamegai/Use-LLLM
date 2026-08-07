@@ -5,6 +5,7 @@ import unittest
 from use_lllm.core.policy import (
     ToolSafety,
     classify_server_tool,
+    classify_tool,
     decide_server_tool,
 )
 
@@ -20,7 +21,7 @@ class ClassifyServerToolTests(unittest.TestCase):
             ToolSafety.LOCAL_WRITE,
         )
         self.assertEqual(
-            classify_server_tool("ms-data-parser", "eicaef_plot_chromatograms"),
+            classify_server_tool("ms-data-parser", "eic_plot_chromatograms"),
             ToolSafety.READ_ONLY,
         )
         self.assertEqual(
@@ -98,6 +99,51 @@ class DecideServerToolTests(unittest.TestCase):
             network_mode="literature-only",
         )
         self.assertTrue(literature.allowed)
+
+
+class ToolNameSyncTests(unittest.TestCase):
+    """ms-data-parser の実ツール名と分類表が一致していること。
+
+    旧名が残ると classify_tool が UNKNOWN を返し、read-only 解析が毎回
+    承認待ちで止まってプロットの描画まで到達できない。
+    """
+
+    def test_current_read_only_tools_are_classified(self) -> None:
+        for name in (
+            "eic_parser",
+            "eic_plot_chromatograms",
+            "eic_plot_compounds",
+            "eic_rank_by_max_intensity",
+            "eic_search_by_mz_range",
+            "eic_search_by_rt_range",
+            "arf_plot_volcano",
+            "dcl_parser",
+            "dcl_find_msms",
+            "sample_search",
+            "pai2_inspect_peak",
+        ):
+            self.assertEqual(classify_tool(name), ToolSafety.READ_ONLY, name)
+
+    def test_removed_server_tools_are_no_longer_classified(self) -> None:
+        for name in (
+            "eicaef_parser",
+            "eicaef_plot_chromatograms",
+            "eicaef_top_peak_tops",
+            "eicaef_search_by_mz_range",
+            "eicaef_search_by_rt_range",
+            "arf_re_pca",
+            "pai2_get_top_metabolites",
+            "pai2_inspect_metabolite_details",
+            "pai2_update_analysis_filter",
+        ):
+            self.assertEqual(classify_tool(name), ToolSafety.UNKNOWN, name)
+
+    def test_figure_savers_stay_local_write(self) -> None:
+        for name in ("save_pca_figure", "save_volcano_figure", "save_eic_figure"):
+            self.assertEqual(classify_tool(name), ToolSafety.LOCAL_WRITE, name)
+
+    def test_paper_search_stays_network_gated(self) -> None:
+        self.assertEqual(classify_tool("paper_search"), ToolSafety.EXTERNAL_NETWORK)
 
 
 if __name__ == "__main__":

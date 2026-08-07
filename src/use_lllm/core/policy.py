@@ -16,16 +16,25 @@ class ToolSafety(StrEnum):
     UNKNOWN = "unknown"
 
 
+# ms-data-parser の実ツール名と一致させる（正準は同サーバの
+# tests/test_server_registration.py の EXPECTED_TOOLS）。旧名が残ると
+# classify_tool が UNKNOWN を返し、read-only 解析が毎回承認待ちで止まる。
+# paper_search は EXTERNAL_NETWORK_TOOLS 側にあるためここへ入れてはいけない
+# （入れると network_mode のゲートを迂回する）。
 READ_ONLY_TOOLS = frozenset(
     {
         "list_reports",
         "read_report",
         "list_data_files",
         "load_dataset",
+        "log_search",
+        "knowledge_coverage",
+        "sample_search",
         "pai2_parser",
-        "pai2_get_top_metabolites",
-        "pai2_inspect_metabolite_details",
+        "pai2_inspect_peak",
         "verify_peak_annotation",
+        "dcl_parser",
+        "dcl_find_msms",
         "arf_list_tags",
         "arf_list_classes",
         "arf_list_sample_roles",
@@ -33,17 +42,16 @@ READ_ONLY_TOOLS = frozenset(
         "arf_preprocess",
         "arf_pca_preprocessed",
         "arf_parser",
-        "arf_re_pca",
         "arf_differential",
+        "arf_plot_volcano",
         "arf2_parser",
         "arf2_annotate_identities",
-        "eicaef_parser",
-        "eicaef_plot_chromatograms",
-        "eicaef_top_peak_tops",
-        "eicaef_search_by_mz_range",
-        "eicaef_search_by_rt_range",
-        "knowledge_coverage",
-        "log_search",
+        "eic_parser",
+        "eic_plot_chromatograms",
+        "eic_plot_compounds",
+        "eic_rank_by_max_intensity",
+        "eic_search_by_mz_range",
+        "eic_search_by_rt_range",
     }
 )
 LOCAL_WRITE_TOOLS = frozenset(
@@ -54,7 +62,6 @@ LOCAL_WRITE_TOOLS = frozenset(
         "save_volcano_figure",
         "record_objective",
         "update_objective",
-        "pai2_update_analysis_filter",
     }
 )
 EXTERNAL_NETWORK_TOOLS = frozenset({"paper_search"})

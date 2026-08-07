@@ -303,9 +303,9 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "step_limit")
         self.assertEqual(len(registry.calls), 2)
 
-    async def test_reconnect_replays_parser_before_re_pca(self) -> None:
+    async def test_reconnect_replays_parser_before_differential(self) -> None:
         parser = "ms-data-parser::arf_parser"
-        re_pca = "ms-data-parser::arf_re_pca"
+        re_pca = "ms-data-parser::arf_differential"
         ollama = FakeOllama(
             [
                 response(tool=parser, arguments={"file_path": "C:/data/test.arf"}),
