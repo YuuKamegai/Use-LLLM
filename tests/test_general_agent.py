@@ -398,6 +398,46 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+    async def test_approval_stream_runs_approved_tool_then_streams_the_rest(self) -> None:
+        ollama = ScriptedStreamingOllama(
+            [
+                {"tool_calls": [{"function": {"name": "srv::danger", "arguments": {"x": 1}}}]},
+                {"tool_calls": [{"function": {"name": "srv::peek", "arguments": {}}}]},
+                {"content": "完了"},
+            ]
+        )
+        registry = FakeRegistry(
+            {
+                "srv::danger": (ToolSafety.UNKNOWN, False),
+                "srv::peek": (ToolSafety.READ_ONLY, True),
+            }
+        )
+        loop = GeneralAgentLoop(ollama, self.store, registry)
+        first = [item async for item in loop.chat_stream(self.session["id"], "実行して")]
+        event_id = first[-1]["approval"]["event_id"]
+
+        events = [
+            item
+            async for item in loop.resolve_approval_stream(
+                self.session["id"], event_id, approved=True
+            )
+        ]
+
+        tools = [(item["type"], item.get("tool")) for item in events if "tool" in item]
+        self.assertEqual(
+            tools,
+            [
+                ("tool_started", "srv::danger"),
+                ("tool_result", "srv::danger"),
+                ("tool_started", "srv::peek"),
+                ("tool_result", "srv::peek"),
+            ],
+        )
+        self.assertIn({"type": "delta", "content": "完了", "step": 2}, events)
+        self.assertEqual(events[-1]["type"], "complete")
+        self.assertEqual([call[0] for call in registry.calls], ["srv::danger", "srv::peek"])
+        self.assertEqual(self.store.get_session(self.session["id"])["status"], "ready")
+
 class LongDescriptionRegistry(FakeRegistry):
     def ollama_tools(self, query=None, *, limit=12):
         return [

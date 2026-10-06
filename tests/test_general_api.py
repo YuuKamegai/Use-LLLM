@@ -504,6 +504,64 @@ class GeneralApiTests(unittest.TestCase):
             self.assertEqual(resolved.status_code, 200, resolved.text)
             self.assertEqual(resolved.json()["content"], "完了")
 
+    def _pending_approval(self, client):
+        self.ollama.responses = [
+            assistant(tool="ms-data-parser::danger", arguments={"x": 1}),
+            assistant("完了"),
+        ]
+        client.post(
+            "/api/mcp-servers",
+            json={"name": "ms-data-parser", "command": "python", "args": ["server.py"]},
+        )
+        client.post("/api/mcp-servers/ms-data-parser/connect")
+        session = client.post("/api/sessions", json={"title": "chat"}).json()
+        pending = client.post(
+            f"/api/sessions/{session['id']}/chat", json={"message": "実行"}
+        ).json()
+        self.assertEqual(pending["status"], "approval_required")
+        return session, pending["approval"]["event_id"]
+
+    def test_approval_stream_reports_tool_progress_and_answer(self) -> None:
+        # 承認後の続きは数分かかりうる。単発 POST だと画面に経過が出ず停止も
+        # 効かないため、送信と同じ SSE で流す。
+        with secure_client(self.app) as client:
+            session, event_id = self._pending_approval(client)
+            response = client.post(
+                f"/api/sessions/{session['id']}/approvals/{event_id}/stream",
+                json={"approved": True},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            events = [
+                json.loads(line[6:])
+                for line in response.text.splitlines()
+                if line.startswith("data: ")
+            ]
+            types = [item["type"] for item in events]
+            self.assertIn("tool_started", types)
+            self.assertIn("tool_result", types)
+            self.assertEqual(events[-1]["type"], "complete")
+            self.assertEqual(events[-1]["content"], "完了")
+
+    def test_second_turn_on_running_session_is_rejected(self) -> None:
+        # 承認後の処理が走っている最中に別の送信を受けると、2 つのループが同じ
+        # 会話履歴へ交互に書き込んでしまう。
+        with secure_client(self.app) as client:
+            session = client.post("/api/sessions", json={"title": "chat"}).json()
+            runtime = self.app.state.runtime
+            with runtime.turn(session["id"]):
+                blocked = client.post(
+                    f"/api/sessions/{session['id']}/chat", json={"message": "割り込み"}
+                )
+                streamed = client.post(
+                    f"/api/sessions/{session['id']}/chat/stream", json={"message": "割り込み"}
+                )
+            self.assertEqual(blocked.status_code, 409, blocked.text)
+            self.assertIn('"type": "error"', streamed.text)
+            self.assertEqual(self.store.list_messages(session["id"]), [])
+            # ターンが終われば再び送信できる。
+            ok = client.post(f"/api/sessions/{session['id']}/chat", json={"message": "こんにちは"})
+            self.assertEqual(ok.status_code, 200, ok.text)
+
     def test_standalone_app_redirects_root_and_mounts_general(self) -> None:
         standalone = create_standalone_app(general_app=self.app)
         with TestClient(standalone, base_url="http://127.0.0.1") as client:

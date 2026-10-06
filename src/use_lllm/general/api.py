@@ -7,8 +7,8 @@ import base64
 import html
 import json
 import secrets
-from collections.abc import Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -156,6 +156,10 @@ OllamaFactory = Callable[[OllamaConfig], OllamaClient]
 AzureFactory = Callable[[AzureOpenAIConfig], AzureOpenAIClient]
 
 
+class SessionBusy(Exception):
+    """同じセッションで別のターンが進行中。"""
+
+
 class GeneralRuntime:
     def __init__(
         self,
@@ -174,8 +178,30 @@ class GeneralRuntime:
         self.ollama_factory = ollama_factory
         self.azure_factory = azure_factory
         self.autostart_attempted = False
+        # 応答生成中のセッション。エンドポイント切替で agent は作り直されるため
+        # agent ではなく runtime が持つ。DB の status でなくメモリに置くのは、
+        # プロセスが落ちたときに「実行中」が残ってセッションが使えなくなるのを防ぐため。
+        self._active_turns: set[str] = set()
         self.settings = load_settings(settings_path)
         self._install(self.settings, persist=False)
+
+    @contextmanager
+    def turn(self, session_id: str) -> Iterator[None]:
+        """1 セッションで同時に 1 ターンだけ走らせる。
+
+        2 つのループが同じ会話履歴へ交互に書き込むと、互いの途中経過が混ざった
+        履歴で次の判断をしてしまう。
+        """
+
+        if session_id in self._active_turns:
+            raise SessionBusy(
+                "このセッションは応答を生成中です。完了を待つか、停止してから送信してください。"
+            )
+        self._active_turns.add(session_id)
+        try:
+            yield
+        finally:
+            self._active_turns.discard(session_id)
 
     @staticmethod
     def _validate(settings: Settings) -> EndpointRegistry:
@@ -328,6 +354,8 @@ def _server(body: MCPServerBody, existing: MCPServerSpec | None = None) -> MCPSe
 
 
 def _raise_http(exc: Exception) -> None:
+    if isinstance(exc, SessionBusy):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(exc, (SessionNotFound, KeyError, FileNotFoundError)):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if isinstance(exc, ToolPolicyError):
@@ -849,24 +877,19 @@ def create_general_app(
             metadata = {"attachment_ids": body.attachment_ids}
             if attachment_context:
                 metadata["attachment_context"] = attachment_context
-            return await runtime.agent.chat(session_id, body.message, metadata=metadata)
+            with runtime.turn(session_id):
+                return await runtime.agent.chat(session_id, body.message, metadata=metadata)
         except Exception as exc:
             _raise_http(exc)
 
-    @app.post("/api/sessions/{session_id}/chat/stream")
-    async def chat_stream(session_id: str, body: ChatBody) -> StreamingResponse:
-        general_session(session_id)
-
+    def event_stream(session_id: str, events: Callable[[], AsyncIterator[dict[str, Any]]]):
+        # ガードは生成器の中で取る。StreamingResponse が生成器を一度も回さずに
+        # 終わると finally が走らず、ロックが残ってしまうため。
         async def generate():
             try:
-                attachment_context = runtime.knowledge.attachment_context(body.attachment_ids)
-                metadata = {"attachment_ids": body.attachment_ids}
-                if attachment_context:
-                    metadata["attachment_context"] = attachment_context
-                async for item in runtime.agent.chat_stream(
-                    session_id, body.message, metadata=metadata
-                ):
-                    yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+                with runtime.turn(session_id):
+                    async for item in events():
+                        yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -874,16 +897,44 @@ def create_general_app(
 
         return StreamingResponse(generate(), media_type="text/event-stream")
 
+    @app.post("/api/sessions/{session_id}/chat/stream")
+    async def chat_stream(session_id: str, body: ChatBody) -> StreamingResponse:
+        general_session(session_id)
+
+        def events() -> AsyncIterator[dict[str, Any]]:
+            attachment_context = runtime.knowledge.attachment_context(body.attachment_ids)
+            metadata = {"attachment_ids": body.attachment_ids}
+            if attachment_context:
+                metadata["attachment_context"] = attachment_context
+            return runtime.agent.chat_stream(session_id, body.message, metadata=metadata)
+
+        return event_stream(session_id, events)
+
     @app.post("/api/sessions/{session_id}/approvals/{event_id}")
     async def resolve_approval(
         session_id: str, event_id: int, body: ApprovalBody
     ) -> dict[str, Any]:
         try:
             general_session(session_id)
-            return await runtime.agent.resolve_approval(
-                session_id, event_id, approved=body.approved
-            )
+            with runtime.turn(session_id):
+                return await runtime.agent.resolve_approval(
+                    session_id, event_id, approved=body.approved
+                )
         except Exception as exc:
             _raise_http(exc)
+
+    @app.post("/api/sessions/{session_id}/approvals/{event_id}/stream")
+    async def resolve_approval_stream(
+        session_id: str, event_id: int, body: ApprovalBody
+    ) -> StreamingResponse:
+        """承認後の続きを送信と同じ SSE で流す（経過表示と停止のため）。"""
+
+        general_session(session_id)
+        return event_stream(
+            session_id,
+            lambda: runtime.agent.resolve_approval_stream(
+                session_id, event_id, approved=body.approved
+            ),
+        )
 
     return app

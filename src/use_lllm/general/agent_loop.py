@@ -1062,9 +1062,11 @@ class GeneralAgentLoop:
             "step": self.max_steps,
         }
 
-    async def resolve_approval(
+    async def _apply_approval(
         self, session_id: str, event_id: int, *, approved: bool
-    ) -> dict[str, Any]:
+    ) -> MCPToolResult | None:
+        """承認待ちのツールを実行（または拒否を記録）し、続きを回せる状態にする。"""
+
         session = self._general_session(session_id)
         event = self.sessions.get_event(session_id, event_id)
         if event["kind"] != "general_tool_approval" or event["status"] != "pending":
@@ -1124,11 +1126,65 @@ class GeneralAgentLoop:
             status="running",
             state_patch={"pending_approval": None},
         )
+        return result if approved else None
+
+    async def resolve_approval(
+        self, session_id: str, event_id: int, *, approved: bool
+    ) -> dict[str, Any]:
+        await self._apply_approval(session_id, event_id, approved=approved)
         return await self._drive(session_id)
 
     async def resolve_approval_stream(
         self, session_id: str, event_id: int, *, approved: bool
     ) -> AsyncIterator[dict[str, Any]]:
-        yield {"type": "status", "status": "executing"}
-        result = await self.resolve_approval(session_id, event_id, approved=approved)
-        yield {"type": result["status"], **result}
+        """承認後の続きを、通常の送信と同じイベント列で逐次返す。
+
+        承認後もモデルは何段もツールを呼び続けうる（ローカル LLM では 1 段数十秒）。
+        単発の応答で返すと、その間 UI に経過が出ず停止もできないため、
+        承認したツールの実行から以降の段まで chat_stream と同じ形で流す。
+        """
+
+        payload = self.sessions.get_event(session_id, event_id)["payload"]
+        name = str(payload.get("qualified_name", ""))
+        try:
+            if approved:
+                yield {
+                    "type": "tool_started",
+                    "tool": name,
+                    "arguments": dict(payload.get("arguments", {})),
+                    "step": 0,
+                }
+            yield {"type": "status", "status": "executing"}
+            result = await self._apply_approval(session_id, event_id, approved=approved)
+            if result is not None:
+                yield {
+                    "type": "tool_result",
+                    "tool": name,
+                    "is_error": result.is_error,
+                    "step": 0,
+                }
+            yield {"type": "status", "status": "thinking"}
+            if getattr(self.ollama, "stream_chat", None) is None:
+                final = await self._drive(session_id)
+                yield {"type": final["status"], **final}
+                return
+            async for item in self._drive_stream(session_id):
+                yield item
+        except asyncio.CancelledError:
+            self.sessions.update_session(session_id, status="ready")
+            self.sessions.append_event(
+                session_id,
+                "general_chat_cancelled",
+                {},
+                status="cancelled",
+            )
+            raise
+        except Exception as exc:
+            self.sessions.update_session(session_id, status="error")
+            self.sessions.append_event(
+                session_id,
+                "general_chat_failed",
+                {"error": str(exc)},
+                status="failed",
+            )
+            raise

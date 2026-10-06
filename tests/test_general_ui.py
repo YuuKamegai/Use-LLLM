@@ -98,10 +98,17 @@ class GeneralUiContractTests(unittest.TestCase):
             script.index("async function sendMessage") : script.index("function cancelChat")
         ]
         optimistic_index = send_source.index("appendMessage(optimisticMessage)")
-        request_index = send_source.index("const response = await fetch")
+        request_index = send_source.index("await streamTurn(")
         reconcile_index = send_source.index("await openSession(state.current.id)")
         self.assertLess(optimistic_index, request_index)
         self.assertLess(request_index, reconcile_index)
+
+        # 承認後の再開も SSE で流し、停止ボタン（state.controller）を効かせる。
+        approval_source = script[
+            script.index("async function resolveApproval") : script.index("function setBusy")
+        ]
+        self.assertIn("/approvals/${eventId}/stream", approval_source)
+        self.assertIn("state.controller = new AbortController()", approval_source)
 
     def test_general_index_and_static_assets_are_served(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

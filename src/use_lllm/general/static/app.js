@@ -689,21 +689,67 @@ function renderApproval(event) {
   card.append(title, reason, code, actions); return card;
 }
 
+// 承認後もモデルは何段もツールを呼び続けうるので、送信と同じ SSE で経過を流し、停止も効かせる。
 async function resolveApproval(eventId, approved) {
   if (!state.current) return;
   setBusy(true, approved ? "承認済みツールを実行中" : "拒否を伝達中");
+  state.controller = new AbortController();
   try {
-    const result = await api(`sessions/${state.current.id}/approvals/${eventId}`, { method: "POST", body: JSON.stringify({ approved }) });
-    await openSession(state.current.id);
-    if (result.status === "approval_required") toast("次のツール呼び出しも確認が必要です。");
-  } catch (error) { toast(error.message, true); }
-  finally { setBusy(false); }
+    const last = await streamTurn(`sessions/${state.current.id}/approvals/${eventId}/stream`, { approved });
+    await openSession(state.current.id); await loadSessions();
+    if (last?.type === "approval_required") toast("次のツール呼び出しも確認が必要です。");
+  } catch (error) {
+    if (error.name === "AbortError") toast("応答を停止しました。"); else toast(error.message, true);
+  } finally { state.controller = null; setBusy(false); }
 }
 
 function setBusy(busy, label = "準備完了") {
   $("#send-chat").disabled = busy;
   $("#cancel-chat").classList.toggle("hidden", !busy);
   $("#composer-status").textContent = label;
+}
+
+// SSE のターン（送信・承認後の再開）を読み、画面へ反映して最後のイベントを返す。
+async function streamTurn(path, payload) {
+  const response = await fetch(`./api/${path}`, { method: "POST", headers: requestHeaders("POST"), body: JSON.stringify(payload), signal: state.controller.signal });
+  if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
+  const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+  let streaming = null; let streamedContent = ""; let last = null;
+  while (true) {
+    const { done, value } = await reader.read(); if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const chunks = buffer.split("\n\n"); buffer = chunks.pop();
+    for (const chunk of chunks) {
+      const line = chunk.split("\n").find((item) => item.startsWith("data: "));
+      if (!line) continue;
+      const item = JSON.parse(line.slice(6)); last = item;
+      if (item.session_title) applySessionTitle(item.session_title);
+      if (item.type === "status") $("#composer-status").textContent = ({ thinking: "モデルが考えています", executing: "承認済みツールを実行中" })[item.status] || item.status;
+      if (item.type === "delta") {
+        streamedContent += item.content || "";
+        if (!streaming) {
+          streaming = renderMessage({ role: "assistant", content: "", metadata: {} });
+          streaming.classList.add("streaming"); $("#chat-messages").append(streaming);
+        }
+        const node = streaming.querySelector(".message-content");
+        if (window.GeneralMarkdown) node.innerHTML = window.GeneralMarkdown.renderMarkdown(streamedContent);
+        else node.textContent = streamedContent;
+        scrollConversationToEnd();
+      }
+      if (item.type === "tool_started") {
+        $("#composer-status").textContent = `${item.tool} を実行中`;
+        appendMessage({ role: "tool", content: `実行中: ${item.tool}\n${JSON.stringify(item.arguments || {}, null, 2)}`, metadata: { tool_name: item.tool } });
+      }
+      if (item.type === "tool_result") $("#composer-status").textContent = `${item.tool} が完了`;
+      if (item.type === "approval_required") $("#composer-status").textContent = "ツール実行の確認待ち";
+      if (item.context_usage && state.current) {
+        state.current.state.context_usage = item.context_usage;
+        renderContextUsage();
+      }
+      if (item.type === "error") throw new Error(item.error);
+    }
+  }
+  return last;
 }
 
 async function sendMessage(event) {
@@ -718,44 +764,7 @@ async function sendMessage(event) {
   setBusy(true, "モデルが考えています");
   state.controller = new AbortController();
   try {
-    const response = await fetch(`./api/sessions/${state.current.id}/chat/stream`, { method: "POST", headers: requestHeaders("POST"), body: JSON.stringify({ message, attachment_ids: state.attachments }), signal: state.controller.signal });
-    if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
-    const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
-    let streaming = null; let streamedContent = "";
-    while (true) {
-      const { done, value } = await reader.read(); if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const chunks = buffer.split("\n\n"); buffer = chunks.pop();
-      for (const chunk of chunks) {
-        const line = chunk.split("\n").find((item) => item.startsWith("data: "));
-        if (!line) continue;
-        const item = JSON.parse(line.slice(6));
-        if (item.session_title) applySessionTitle(item.session_title);
-        if (item.type === "status") $("#composer-status").textContent = item.status === "thinking" ? "モデルが考えています" : item.status;
-        if (item.type === "delta") {
-          streamedContent += item.content || "";
-          if (!streaming) {
-            streaming = renderMessage({ role: "assistant", content: "", metadata: {} });
-            streaming.classList.add("streaming"); $("#chat-messages").append(streaming);
-          }
-          const node = streaming.querySelector(".message-content");
-          if (window.GeneralMarkdown) node.innerHTML = window.GeneralMarkdown.renderMarkdown(streamedContent);
-          else node.textContent = streamedContent;
-          scrollConversationToEnd();
-        }
-        if (item.type === "tool_started") {
-          $("#composer-status").textContent = `${item.tool} を実行中`;
-          appendMessage({ role: "tool", content: `実行中: ${item.tool}\n${JSON.stringify(item.arguments || {}, null, 2)}`, metadata: { tool_name: item.tool } });
-        }
-        if (item.type === "tool_result") $("#composer-status").textContent = `${item.tool} が完了`;
-        if (item.type === "approval_required") $("#composer-status").textContent = "ツール実行の確認待ち";
-        if (item.context_usage && state.current) {
-          state.current.state.context_usage = item.context_usage;
-          renderContextUsage();
-        }
-        if (item.type === "error") throw new Error(item.error);
-      }
-    }
+    await streamTurn(`sessions/${state.current.id}/chat/stream`, { message, attachment_ids: state.attachments });
     state.attachments = []; renderAttachmentChips();
     await openSession(state.current.id); await loadSessions();
   } catch (error) {
