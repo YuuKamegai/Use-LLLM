@@ -104,21 +104,23 @@ class OllamaClient:
         }
 
     async def context_window(self) -> int | None:
-        """Return the context length of the currently loaded selected model."""
+        """Return the effective context length chat requests will run with.
 
-        data = await self._request("GET", "/api/ps")
-        models = data.get("models", [])
-        if not isinstance(models, list):
-            return None
-        for model in models:
-            if not isinstance(model, dict):
-                continue
-            name = str(model.get("name") or model.get("model") or "")
-            if name == self.config.model:
-                value = model.get("context_length")
-                if isinstance(value, int) and value > 0:
-                    return value
-        return None
+        Every chat request sends ``num_ctx``, and Ollama reloads the model with it,
+        capped at the model's trained limit. /api/ps is not used: it reflects
+        whatever another client last loaded the model with (often 4096).
+        """
+
+        data = await self._request("POST", "/api/show", json={"model": self.config.model})
+        info = data.get("model_info")
+        if isinstance(info, dict):
+            for key, value in info.items():
+                if key.endswith(".context_length") and isinstance(value, int) and value > 0:
+                    return min(self.config.num_ctx, value)
+        return self.config.num_ctx
+
+    def _options(self, temperature: float) -> dict[str, Any]:
+        return {"temperature": temperature, "num_ctx": self.config.num_ctx}
 
     async def chat(
         self,
@@ -135,7 +137,7 @@ class OllamaClient:
             "model": model or self.config.model,
             "messages": messages,
             "stream": False,
-            "options": {"temperature": temperature},
+            "options": self._options(temperature),
         }
         if num_predict is not None:
             payload["options"]["num_predict"] = num_predict
@@ -169,7 +171,7 @@ class OllamaClient:
             "model": model or self.config.model,
             "messages": messages,
             "stream": True,
-            "options": {"temperature": temperature},
+            "options": self._options(temperature),
         }
         if tools:
             payload["tools"] = tools

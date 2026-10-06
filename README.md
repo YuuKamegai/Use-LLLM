@@ -97,6 +97,7 @@ uv run ruff check src tests
 node --check src/use_lllm/general/static/app.js
 node tests/test_general_markdown.cjs
 node tests/test_general_artifacts.cjs
+node tests/test_general_resizable_frame.cjs
 python -m compileall -q src
 git diff --check
 ```

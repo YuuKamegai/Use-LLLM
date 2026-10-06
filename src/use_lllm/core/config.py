@@ -11,6 +11,11 @@ from urllib.parse import urlsplit
 DEFAULT_MCP_COMMAND = Path(sys.executable)
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "qwen3:14b"
+# Ollama は num_ctx を送らないとモデルを既定の 4096 で読み込み、溢れたプロンプトを
+# 黙って切り捨てる。ms-data-parser のツール定義だけで約 26k トークンあり、4096 では
+# ツールの大半とユーザー発話の意図がモデルから見えなくなっていた。
+# モデル上限を超える値は Ollama 側で上限へ丸められる。
+DEFAULT_OLLAMA_NUM_CTX = 65_536
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -79,6 +84,7 @@ class OllamaConfig:
     model: str = DEFAULT_OLLAMA_MODEL
     timeout_seconds: float = 300.0
     allow_lan: bool = False
+    num_ctx: int = DEFAULT_OLLAMA_NUM_CTX
 
     @classmethod
     def from_env(cls) -> "OllamaConfig":
@@ -101,3 +107,5 @@ class OllamaConfig:
             raise ConfigurationError("Ollamaモデル名が空です。")
         if self.timeout_seconds <= 0:
             raise ConfigurationError("Ollamaタイムアウトは0より大きくしてください。")
+        if self.num_ctx < 2048:
+            raise ConfigurationError("Ollamaのnum_ctxは2048以上にしてください。")

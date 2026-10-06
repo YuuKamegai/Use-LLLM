@@ -37,14 +37,16 @@ class FakeBlock:
 
 
 class FakeSession:
-    def __init__(self, tools: list[FakeTool]) -> None:
+    def __init__(self, tools: list[FakeTool], instructions: str | None = None) -> None:
         self.tools = tools
+        self.instructions = instructions
         self.calls: list[tuple[str, dict]] = []
 
     async def initialize(self):
         return SimpleNamespace(
             serverInfo=SimpleNamespace(name="fake", version="1.0"),
             protocolVersion="2025-06-18",
+            instructions=self.instructions,
         )
 
     async def list_tools(self, cursor=None):
@@ -73,7 +75,8 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
                         },
                         annotations={"readOnlyHint": True},
                     )
-                ]
+                ],
+                instructions="ENTRY POINT: MS-DIAL outputs -> load_dataset",
             ),
             "other": FakeSession(
                 [
@@ -105,6 +108,23 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
 
         routed = registry.ollama_tools("dangerを実行", limit=1)
         self.assertEqual(routed[0]["function"]["name"], "other::danger")
+
+    async def test_server_instructions_are_kept_per_connected_server(self) -> None:
+        registry = MCPRegistry(
+            [MCPServerSpec("ms-data-parser", "python"), MCPServerSpec("other", "python")],
+            session_factory=self.factory,
+        )
+        await registry.connect("ms-data-parser")
+        await registry.connect("other")
+
+        # instructions を返さないサーバは載せない
+        self.assertEqual(
+            registry.server_instructions(),
+            {"ms-data-parser": "ENTRY POINT: MS-DIAL outputs -> load_dataset"},
+        )
+
+        await registry.disconnect("ms-data-parser")
+        self.assertEqual(registry.server_instructions(), {})
 
     async def test_read_only_auto_validates_and_calls(self) -> None:
         registry = MCPRegistry(

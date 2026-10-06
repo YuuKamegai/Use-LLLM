@@ -51,6 +51,7 @@ class GeneralUiContractTests(unittest.TestCase):
         self.assertIn("./static/pca-plot.js", html)
         self.assertIn("./static/eic-plot.js", html)
         self.assertIn("./static/volcano-plot.js", html)
+        self.assertIn("./static/resizable-frame.js", html)
         self.assertIn("appendPcaPlot", script)
         self.assertIn("appendEicPlot", script)
         self.assertIn("appendVolcanoPlot", script)
@@ -127,6 +128,9 @@ class GeneralUiContractTests(unittest.TestCase):
         self.assertEqual(script.status_code, 200)
         self.assertIn("initialize();", script.text)
         self.assertEqual(styles.status_code, 200)
+        # 開発中の UI 更新が古い CSS/JS のキャッシュで隠れないよう、毎回再検証させる。
+        self.assertEqual(script.headers["cache-control"], "no-cache")
+        self.assertEqual(styles.headers["cache-control"], "no-cache")
         self.assertEqual(pca_helper.status_code, 200)
         self.assertIn("GeneralPcaPlot", pca_helper.text)
         self.assertEqual(eic_helper.status_code, 200)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +9,8 @@ from use_lllm.core.mcp_client import MCPToolResult
 from use_lllm.core.ollama import OllamaResponse
 from use_lllm.core.policy import ToolDecision, ToolSafety
 from use_lllm.core.sessions import SessionStore
-from use_lllm.general.agent_loop import GeneralAgentLoop
+from use_lllm.core.tool_catalog import DESCRIBE_TOOL_NAME
+from use_lllm.general.agent_loop import MAX_SERVER_INSTRUCTIONS_CHARS, GeneralAgentLoop
 
 
 def response(
@@ -308,6 +310,117 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         result = await loop.chat(self.session["id"], "繰り返して")
         self.assertEqual(result["status"], "step_limit")
         self.assertEqual(len(registry.calls), 2)
+
+    async def test_server_instructions_reach_system_prompt_for_offered_servers_only(
+        self,
+    ) -> None:
+        # MCP サーバの instructions（入口の判定規則など）が無いと、ローカルモデルは
+        # 「解析済みの出力」と言われても生データ向けツールから探索を始めてしまう。
+        ollama = FakeOllama([response("了解")])
+        registry = FakeRegistry({})
+        registry.server_instructions = lambda: {
+            "srv": "ENTRY POINT: outputs -> load_dataset",
+            "absent": "このサーバのツールは今回渡していない",
+        }
+        loop = GeneralAgentLoop(ollama, self.store, registry)
+
+        await loop.chat(self.session["id"], "解析して")
+
+        system = ollama.calls[0]["messages"][0]["content"]
+        self.assertIn("ENTRY POINT: outputs -> load_dataset", system)
+        self.assertIn("srv", system)
+        self.assertNotIn("このサーバのツールは今回渡していない", system)
+
+    async def test_oversized_server_instructions_are_truncated(self) -> None:
+        ollama = FakeOllama([response("了解")])
+        registry = FakeRegistry({})
+        registry.server_instructions = lambda: {"srv": "A" * (MAX_SERVER_INSTRUCTIONS_CHARS + 500)}
+        loop = GeneralAgentLoop(ollama, self.store, registry)
+
+        await loop.chat(self.session["id"], "解析して")
+
+        system = ollama.calls[0]["messages"][0]["content"]
+        self.assertIn("A" * MAX_SERVER_INSTRUCTIONS_CHARS, system)
+        self.assertNotIn("A" * (MAX_SERVER_INSTRUCTIONS_CHARS + 1), system)
+
+    async def test_registry_without_instructions_support_still_works(self) -> None:
+        ollama = FakeOllama([response("了解")])
+        loop = GeneralAgentLoop(ollama, self.store, FakeRegistry({}))
+
+        result = await loop.chat(self.session["id"], "こんにちは")
+
+        self.assertEqual(result["status"], "complete")
+
+    async def test_model_sees_summarized_descriptions_plus_describe_tool(self) -> None:
+        ollama = FakeOllama([response("了解")])
+        loop = GeneralAgentLoop(ollama, self.store, LongDescriptionRegistry({}))
+
+        await loop.chat(self.session["id"], "読み込んで")
+
+        offered = {item["function"]["name"]: item["function"] for item in ollama.calls[0]["tools"]}
+        self.assertEqual(set(offered), {"srv::load", DESCRIBE_TOOL_NAME})
+        self.assertEqual(offered["srv::load"]["description"], "[srv] 読み込む。")
+
+    async def test_describe_tool_answers_locally_with_full_text(self) -> None:
+        ollama = FakeOllama(
+            [response(tool=DESCRIBE_TOOL_NAME, arguments={"name": "srv::load"}), response("了解")]
+        )
+        # decisions が空なので、decide や call_tool に渡れば KeyError / 呼び出し記録で分かる。
+        registry = LongDescriptionRegistry({})
+        loop = GeneralAgentLoop(ollama, self.store, registry)
+
+        result = await loop.chat(self.session["id"], "読み込んで")
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(registry.calls, [])
+        # 900 文字の結果圧縮を受けず、説明全文が次のプロンプトに届く。
+        second_prompt = json.dumps(ollama.calls[1]["messages"], ensure_ascii=False)
+        self.assertIn("詳細" * 600, second_prompt)
+        self.assertEqual(self.store.list_tool_invocations(self.session["id"]), [])
+
+    async def test_stream_describe_tool_answers_locally(self) -> None:
+        ollama = ScriptedStreamingOllama(
+            [
+                {"tool_calls": [{"function": {"name": DESCRIBE_TOOL_NAME, "arguments": {"name": "load"}}}]},
+                {"content": "了解"},
+            ]
+        )
+        registry = LongDescriptionRegistry({})
+        loop = GeneralAgentLoop(ollama, self.store, registry)
+
+        events = [item async for item in loop.chat_stream(self.session["id"], "読み込んで")]
+
+        self.assertEqual(events[-1]["type"], "complete")
+        self.assertEqual(registry.calls, [])
+        self.assertIn(
+            {"type": "tool_result", "tool": DESCRIBE_TOOL_NAME, "is_error": False, "step": 1},
+            events,
+        )
+
+
+class LongDescriptionRegistry(FakeRegistry):
+    def ollama_tools(self, query=None, *, limit=12):
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "srv::load",
+                    "description": "[srv] 読み込む。\n\n" + "詳細" * 600,
+                    "parameters": {"type": "object"},
+                },
+            }
+        ]
+
+
+class ScriptedStreamingOllama(FakeOllama):
+    def __init__(self, messages):
+        super().__init__([])
+        self.messages = list(messages)
+
+    async def stream_chat(self, messages, **kwargs):
+        self.calls.append({"messages": messages, **kwargs})
+        yield {"model": "fake", "message": self.messages.pop(0)}
+        yield {"model": "fake", "message": {}, "done": True}
 
 
 if __name__ == "__main__":

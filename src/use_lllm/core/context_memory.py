@@ -13,6 +13,9 @@ from jsonschema import Draft202012Validator
 
 from use_lllm.core.sessions import SessionStore, compact_tool_result
 
+# 固定費を除いた会話の空きがこれ未満なら、要約しても会話が成り立たない。
+MIN_CONVERSATION_TOKENS = 512
+
 SUMMARY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -47,6 +50,10 @@ class ContextAssembly:
     context_window: int
     input_budget: int
     tool_tokens: int
+    # ツール定義＋システムプロンプト。会話を要約しても減らない固定費。
+    fixed_tokens: int = 0
+    # 固定費だけで入力予算を使い切り、要約しても会話の空きが作れない状態。
+    fixed_overflow: bool = False
 
 
 def estimate_tokens(value: Any) -> int:
@@ -162,9 +169,11 @@ class ContextMemoryManager:
     @staticmethod
     def _stored_message(stored: dict[str, Any]) -> dict[str, Any]:
         content = str(stored["content"])
-        if stored["role"] == "tool":
-            content = compact_tool_result(content, 900)
         metadata = stored.get("metadata", {})
+        # describe_tool の結果はツール説明の全文そのもの。900 文字に縮めると
+        # 要約版を渡して全文を引かせる意味がなくなる（全文側で上限済み）。
+        if stored["role"] == "tool" and not metadata.get("tool_reference"):
+            content = compact_tool_result(content, 900)
         if metadata.get("attachment_context"):
             content += "\n\n[添付されたローカル資料]\n" + str(metadata["attachment_context"])
         item: dict[str, Any] = {"role": stored["role"], "content": content}
@@ -312,9 +321,13 @@ class ContextMemoryManager:
 
         messages = render(prior)
         tool_tokens = estimate_tokens(tools)
+        fixed_tokens = tool_tokens + estimate_tokens([messages[0]])
         input_budget = self._input_budget()
-        message_budget = max(1024, input_budget - tool_tokens)
-        while estimate_tokens(messages) > message_budget:
+        message_budget = input_budget - tool_tokens
+        # 固定費だけで予算が埋まっているなら、会話を要約しても収まらない。
+        # 毎ターン要約 LLM を回して履歴を失うだけなので、要約せずに警告に回す。
+        fixed_overflow = input_budget - fixed_tokens < MIN_CONVERSATION_TOKENS
+        while not fixed_overflow and estimate_tokens(messages) > message_budget:
             boundary = self._recent_boundary(raw)
             candidates = [item for item in raw if boundary and int(item["id"]) < boundary]
             if not candidates:
@@ -344,6 +357,8 @@ class ContextMemoryManager:
             self.context_window,
             input_budget,
             tool_tokens,
+            fixed_tokens,
+            fixed_overflow,
         )
 
     async def context_usage(
@@ -390,9 +405,14 @@ class ContextMemoryManager:
         )
         used_tokens = prompt_tokens + response_tokens
         remaining_tokens = max(0, input_budget - used_tokens)
-        remaining_percent = max(
-            0,
-            min(100, round((remaining_tokens / input_budget) * 100)),
+        # 残り%の分母は「会話に使える分」。ツール定義などの固定費は要約で
+        # 減らないので、入力予算全体を分母にすると開始時点から枯渇して見える。
+        fixed_overflow = input_budget - assembled.fixed_tokens < MIN_CONVERSATION_TOKENS
+        conversation_budget = 0 if fixed_overflow else input_budget - assembled.fixed_tokens
+        remaining_percent = (
+            0
+            if fixed_overflow
+            else max(0, min(100, round((remaining_tokens / conversation_budget) * 100)))
         )
         return {
             "model": model,
@@ -411,6 +431,9 @@ class ContextMemoryManager:
             ),
             "completion_tokens": measured_completion,
             "tool_tokens_estimate": assembled.tool_tokens,
+            "fixed_tokens": assembled.fixed_tokens,
+            "conversation_budget": conversation_budget,
+            "fixed_overflow": fixed_overflow,
             "accuracy": (
                 "measured"
                 if measured_prompt is not None and measured_completion is not None

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -53,6 +53,15 @@ from use_lllm.general.security import (
 STATIC_ROOT = Path(__file__).with_name("static")
 VENDOR_ROOT = STATIC_ROOT.parent.parent / "static" / "vendor"
 MAX_SESSION_PNG_BYTES = 20 * 1024 * 1024
+
+
+class _RevalidatedStaticFiles(StaticFiles):
+    """UI 資産を毎回再検証させ、更新後に古い CSS/JS がキャッシュから使われないようにする。"""
+
+    def file_response(self, *args: Any, **kwargs: Any) -> Response:
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def _static_ui_ready() -> bool:
@@ -366,7 +375,7 @@ def create_general_app(
     app.state.local_api_csrf_token = csrf_token
 
     if STATIC_ROOT.is_dir():
-        app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="general-static")
+        app.mount("/static", _RevalidatedStaticFiles(directory=STATIC_ROOT), name="general-static")
     if VENDOR_ROOT.is_dir():
         app.mount("/vendor", StaticFiles(directory=VENDOR_ROOT), name="general-vendor")
 

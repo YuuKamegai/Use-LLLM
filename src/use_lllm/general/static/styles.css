@@ -138,6 +138,15 @@ button { cursor: pointer; }
 .chat-plot-heading strong { font: 600 .82rem Georgia, "Yu Mincho", serif; }
 .chat-plot-heading span { color: var(--muted); font-size: .62rem; }
 .chat-pca-plot { width: 100%; height: clamp(320px, 45vh, 480px); }
+.message.tool { row-gap: 0; }
+.message > .resize-handle { grid-column: 2; }
+.resize-handle { position: relative; height: 10px; margin: 0 0 -4px; cursor: ns-resize; touch-action: none; }
+.resize-handle::after { content: ""; position: absolute; top: 3px; left: 50%; width: 48px; height: 4px; margin-left: -24px; border-radius: 999px; background: #a9a59b; opacity: .6; transition: opacity .15s ease, background-color .15s ease; }
+.bubble:hover + .resize-handle::after, .chat-pca-plot:hover + .resize-handle::after { opacity: 1; }
+.resize-handle:hover::after, .resize-handle:focus-visible::after, .resize-handle.dragging::after { opacity: 1; background: var(--green); }
+.resize-handle:focus-visible { outline: none; }
+body.resizing-frame, body.resizing-frame * { cursor: ns-resize !important; user-select: none; }
+.bubble.user-sized .tool-image { max-height: none; }
 .approval-card { margin: -8px 0 25px 46px; padding: 16px; border: 1px solid #dfb274; border-left: 4px solid var(--amber); border-radius: 10px; background: #fff8eb; }
 .approval-card h3 { margin: 0 0 5px; font-size: .86rem; }
 .approval-card code { display: block; margin: 10px 0; padding: 9px; border-radius: 7px; background: rgba(105,76,28,.08); font-size: .72rem; white-space: pre-wrap; word-break: break-all; }

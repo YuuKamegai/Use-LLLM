@@ -16,6 +16,7 @@ from use_lllm.core.mcp_registry import MCPRegistry
 from use_lllm.core.ollama import OllamaClient
 from use_lllm.core.policy import ToolSafety
 from use_lllm.core.sessions import SessionStore
+from use_lllm.core.tool_catalog import DESCRIBE_TOOL_NAME, ToolCatalog
 from use_lllm.core.tool_result_contract import MissingState, read_missing_state
 
 SYSTEM_PROMPT = """あなたはローカルファーストの汎用アシスタントです。
@@ -40,6 +41,10 @@ DEFAULT_MAX_STEPS = 20
 # 正常なチェーン長が変わったときにここだけ見れば判断できるようにするため。
 MAX_RECOVERY_DEPTH = 3
 
+# MCP サーバ instructions の1サーバあたりの上限文字数。ms-data-parser は約 9k 文字。
+# サーバが巨大な文字列を返してもコンテキストを食い潰さないための安全弁。
+MAX_SERVER_INSTRUCTIONS_CHARS = 16_000
+
 DEFAULT_GENERAL_SESSION_TITLE = "新しいチャット"
 GENERAL_SESSION_TITLE_LIMIT = 38
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -56,6 +61,8 @@ class RegistryLike(Protocol):
         limit: int | None = None,
         excluded: set[str] | None = None,
     ) -> list[dict[str, Any]]: ...
+
+    def server_instructions(self) -> dict[str, str]: ...
 
     def decide(
         self,
@@ -139,7 +146,36 @@ class GeneralAgentLoop:
             if tool_names
             else "\n現在接続中のMCPツールはありません。"
         )
-        return await self.memory.assemble(session_id, SYSTEM_PROMPT + catalog, tools)
+        system = SYSTEM_PROMPT + catalog + self._server_instructions_block(tool_names)
+        return await self.memory.assemble(session_id, system, tools)
+
+    def _server_instructions_block(self, tool_names: list[str]) -> str:
+        """今回ツールを渡すサーバの instructions を system prompt 用に整形する。
+
+        MCP の instructions は、入口の判定（生データか解析済み出力か）のように
+        個々のツール説明には書けないサーバ全体の手順を運ぶ。これを渡さないと、
+        モデルはツール名と説明だけから手順を推測するしかない。
+
+        ツールを1つも渡していないサーバ（未接続・全ツール無効化）の手順は載せない。
+        """
+
+        provider = getattr(self.registry, "server_instructions", None)
+        if provider is None:
+            return ""
+        offered = {self._server_name(name) for name in tool_names}
+        sections = [
+            f"\n### {server}\n{text[:MAX_SERVER_INSTRUCTIONS_CHARS]}"
+            for server, text in provider().items()
+            if server in offered
+        ]
+        if not sections:
+            return ""
+        return (
+            "\n\n## MCPサーバーの利用手順\n"
+            "以下は各MCPサーバー自身が提供する利用手順です。そのサーバーのツールを選ぶ順序や"
+            "入口の判定に従ってください。ただしユーザーが明示した前提（例: 解析済みデータである）"
+            "がある場合はそれを優先し、上記の方針にも反しないでください。" + "".join(sections)
+        )
 
     async def _record_context_usage(
         self,
@@ -186,6 +222,33 @@ class GeneralAgentLoop:
         if result.text:
             return result.text
         return json.dumps(result.to_dict(), ensure_ascii=False)
+
+    @staticmethod
+    def _is_describe_call(catalog: ToolCatalog, name: str) -> bool:
+        if name == DESCRIBE_TOOL_NAME:
+            return True
+        # tool 部分だけで呼ばれた場合。同名の MCP ツールがあればそちらを優先する。
+        return name == DESCRIBE_TOOL_NAME.split("::", 1)[1] and not any(
+            key.split("::", 1)[-1] == name for key in catalog.full
+        )
+
+    def _answer_describe(
+        self, session_id: str, catalog: ToolCatalog, arguments: dict[str, Any]
+    ) -> bool:
+        """要約で省いたツール説明の全文を、MCP を呼ばずにツール結果として返す。
+
+        読み取り専用の参照なので承認も監査も不要で、解析状態の台帳
+        （tool_invocations）にも載せない。tool_reference 印で結果圧縮を免れる。
+        """
+
+        content, is_error = catalog.describe(arguments)
+        self.sessions.add_message(
+            session_id,
+            "tool",
+            content,
+            {"tool_name": DESCRIBE_TOOL_NAME, "is_error": is_error, "tool_reference": True},
+        )
+        return is_error
 
     @staticmethod
     def _server_name(qualified_name: str) -> str:
@@ -662,11 +725,12 @@ class GeneralAgentLoop:
         ]
         query = user_messages[-1] if user_messages else ""
         excluded = set(self._general_session(session_id)["state"].get("disabled_tools", []))
-        tools = (
+        catalog = ToolCatalog.build(
             self.registry.ollama_tools(query=query, excluded=excluded)
             if excluded
             else self.registry.ollama_tools(query=query)
         )
+        tools = catalog.tools
         for step in range(1, self.max_steps + 1):
             content_parts: list[str] = []
             tool_calls: list[dict[str, Any]] = []
@@ -752,6 +816,21 @@ class GeneralAgentLoop:
                 prompt_eval_count=prompt_eval_count,
                 eval_count=eval_count,
             )
+            if self._is_describe_call(catalog, qualified_name):
+                is_error = self._answer_describe(session_id, catalog, arguments)
+                yield {
+                    "type": "tool_started",
+                    "tool": DESCRIBE_TOOL_NAME,
+                    "arguments": arguments,
+                    "step": step,
+                }
+                yield {
+                    "type": "tool_result",
+                    "tool": DESCRIBE_TOOL_NAME,
+                    "is_error": is_error,
+                    "step": step,
+                }
+                continue
             decision = self.registry.decide(qualified_name, network_mode=network_mode)
             decision_event = self.audit.record_tool_decision(
                 session_id, qualified_name, arguments, decision
@@ -847,11 +926,12 @@ class GeneralAgentLoop:
         ]
         query = user_messages[-1] if user_messages else ""
         excluded = set(self._general_session(session_id)["state"].get("disabled_tools", []))
-        tools = (
+        catalog = ToolCatalog.build(
             self.registry.ollama_tools(query=query, excluded=excluded)
             if excluded
             else self.registry.ollama_tools(query=query)
         )
+        tools = catalog.tools
         for step in range(1, self.max_steps + 1):
             assembled = await self._ollama_messages(session_id, tools)
             response = await self.ollama.chat(
@@ -910,6 +990,9 @@ class GeneralAgentLoop:
                 prompt_eval_count=response.prompt_eval_count,
                 eval_count=response.eval_count,
             )
+            if self._is_describe_call(catalog, qualified_name):
+                self._answer_describe(session_id, catalog, arguments)
+                continue
             decision = self.registry.decide(qualified_name, network_mode=network_mode)
             decision_event = self.audit.record_tool_decision(
                 session_id, qualified_name, arguments, decision

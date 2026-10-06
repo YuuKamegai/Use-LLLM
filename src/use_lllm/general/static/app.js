@@ -74,14 +74,24 @@ function renderContextUsage() {
   }
   const percent = Math.max(0, Math.min(100, Math.round(remaining)));
   const provisional = usage.context_window_confirmed === false;
-  if (percent < 15) meter.classList.add("critical");
+  const overflow = usage.fixed_overflow === true;
+  if (overflow || percent < 15) meter.classList.add("critical");
   else if (percent < 40) meter.classList.add("warning");
-  label.textContent = `${provisional ? "暫定残り" : "残りコンテキスト"} ${percent}%`;
+  label.textContent = overflow
+    ? "ツール定義が予算超過"
+    : `${provisional ? "暫定残り" : "残りコンテキスト"} ${percent}%`;
   fill.style.width = `${percent}%`;
   const compacted = usage.summary_created ? " 古い会話は直前の応答で要約されました。" : "";
   const source = provisional ? "モデル上限未確認の暫定値。" : "";
   const accuracy = usage.accuracy === "measured" ? "トークン使用量は実測。" : "トークン使用量は推定を含みます。";
-  meter.title = `${source}自動要約まで ${formatTokenCount(usage.remaining_tokens)} / ${formatTokenCount(usage.input_budget)} tokens。使用 ${formatTokenCount(usage.used_tokens)}、モデル上限 ${formatTokenCount(usage.context_window)}。${accuracy}${compacted}`.trim();
+  // ツール定義とシステムプロンプトは要約しても減らない固定費なので、会話枠と分けて示す。
+  const fixed = Number.isFinite(Number(usage.fixed_tokens))
+    ? `固定費（ツール定義・システム指示）${formatTokenCount(usage.fixed_tokens)}、会話枠 ${formatTokenCount(usage.conversation_budget)}。`
+    : "";
+  const advice = overflow
+    ? "固定費だけで入力予算を超えているため自動要約を止めています。num_ctx を上げるか、不要なツールを無効化してください。"
+    : "";
+  meter.title = `${advice}${source}自動要約まで ${formatTokenCount(usage.remaining_tokens)} / ${formatTokenCount(usage.input_budget)} tokens。${fixed}使用 ${formatTokenCount(usage.used_tokens)}、モデル上限 ${formatTokenCount(usage.context_window)}。${accuracy}${compacted}`.trim();
 }
 
 async function loadSetup() {
@@ -526,6 +536,8 @@ function renderMessage(item) {
   appendEicPlot(bubble, item);
   appendVolcanoPlot(bubble, item);
   article.append(bubble);
+  // プロット付きは各プロット枠にハンドルを持つので、画像・テキストだけのツール出力枠に付ける。
+  if (item.role === "tool" && !bubble.classList.contains("has-plot")) attachResizeHandle(bubble, { min: 80, label: "ツール出力枠の高さを調整" });
   return article;
 }
 
@@ -537,6 +549,14 @@ function appendMessage(item) {
 function scrollConversationToEnd() {
   const workspace = $("#chat-workspace");
   workspace.scrollTop = workspace.scrollHeight;
+}
+
+function attachResizeHandle(target, options) {
+  if (window.GeneralResizableFrame) window.GeneralResizableFrame.attach(target, options);
+}
+
+function attachPlotResizeHandle(plot) {
+  attachResizeHandle(plot, { min: 240, max: 1600, label: "プロットの高さを調整", onResize: () => { if (plot.data) Plotly.Plots.resize(plot); } });
 }
 
 function appendPcaPlot(bubble, item) {
@@ -552,6 +572,7 @@ function appendPcaPlot(bubble, item) {
   heading.append(title, note);
   const plot = document.createElement("div"); plot.className = "chat-pca-plot"; plot.setAttribute("aria-label", `${pca.title} Plotly chart`);
   card.append(heading, plot); bubble.append(card);
+  attachPlotResizeHandle(plot);
 
   const draw = () => {
     Promise.resolve(Plotly.react(
@@ -589,6 +610,7 @@ function appendEicPlot(bubble, item) {
   const plot = document.createElement("div"); plot.className = "chat-pca-plot";
   plot.setAttribute("aria-label", `${eic.title} Plotly chart`);
   card.append(heading, plot); bubble.append(card);
+  attachPlotResizeHandle(plot);
 
   // 多系列（複数物質オーバーレイ）では横並び凡例が潰れるので右外側の縦並びにする。
   const manySeries = eic.series.length > 8;
@@ -632,6 +654,7 @@ function appendVolcanoPlot(bubble, item) {
   const plot = document.createElement("div"); plot.className = "chat-pca-plot";
   plot.setAttribute("aria-label", `${volcano.title} Plotly chart`);
   card.append(heading, plot); bubble.append(card);
+  attachPlotResizeHandle(plot);
 
   const draw = () => {
     Promise.resolve(Plotly.react(

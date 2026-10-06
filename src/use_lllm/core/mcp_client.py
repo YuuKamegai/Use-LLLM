@@ -50,6 +50,9 @@ class MCPServerSnapshot:
     resources: tuple[dict[str, Any], ...] = ()
     resource_templates: tuple[dict[str, Any], ...] = ()
     prompts: tuple[dict[str, Any], ...] = ()
+    # initialize 応答の instructions（MCP 標準）。ツールの使い分けや入口の判定など、
+    # 個々のツール説明に書けないサーバ全体の利用手順が入る。
+    instructions: str | None = None
 
     @property
     def tool_count(self) -> int:

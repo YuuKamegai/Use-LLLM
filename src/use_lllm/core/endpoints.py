@@ -5,7 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from use_lllm.core.azure_openai import AzureOpenAIConfig
-from use_lllm.core.config import ConfigurationError, OllamaConfig, is_loopback_url
+from use_lllm.core.config import (
+    DEFAULT_OLLAMA_NUM_CTX,
+    ConfigurationError,
+    OllamaConfig,
+    is_loopback_url,
+)
 
 TRUST_LOOPBACK = "loopback"
 TRUST_LAN_ALLOWED = "lan_allowed"
@@ -65,6 +70,7 @@ class Endpoint:
             model=chosen,
             timeout_seconds=timeout_seconds,
             allow_lan=self.allow_lan,
+            num_ctx=self.context_window or DEFAULT_OLLAMA_NUM_CTX,
         )
 
     def to_azure_openai_config(self, *, timeout_seconds: float = 300.0) -> AzureOpenAIConfig:

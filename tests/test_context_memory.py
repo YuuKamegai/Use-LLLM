@@ -170,6 +170,67 @@ class ContextMemoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(usage["accuracy"], "measured")
             self.assertEqual(usage["measurement_source"], "provider_usage")
 
+    async def test_remaining_percent_is_measured_against_conversation_room(self) -> None:
+        # ツール定義とシステムプロンプトは要約しても減らない固定費。残り%は
+        # 会話に使える分を分母にしないと、開始時点から 0% 近くに見えてしまう。
+        with tempfile.TemporaryDirectory() as raw:
+            store = SessionStore(Path(raw) / "state")
+            session = store.create_session("chat", surface="general")
+            store.add_message(session["id"], "user", "残量")
+            memory = ContextMemoryManager(FakeSummarizer(), store, context_window=32768)
+            tools = [{"type": "function", "function": {"name": "srv::t", "description": "x" * 30_000}}]
+            assembled = await memory.assemble(session["id"], "system", tools)
+
+            usage = await memory.context_usage(
+                assembled, model="fake", response_content="ok", prompt_eval_count=12_000
+            )
+
+            fixed = assembled.fixed_tokens
+            self.assertGreater(fixed, assembled.tool_tokens)
+            self.assertEqual(usage["fixed_tokens"], fixed)
+            self.assertEqual(usage["conversation_budget"], assembled.input_budget - fixed)
+            self.assertFalse(usage["fixed_overflow"])
+            self.assertEqual(
+                usage["remaining_percent"],
+                round(usage["remaining_tokens"] / usage["conversation_budget"] * 100),
+            )
+
+    async def test_fixed_cost_over_budget_skips_futile_compaction(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = SessionStore(Path(raw) / "state")
+            session = store.create_session("chat", surface="general")
+            for index in range(6):
+                store.add_message(session["id"], "user", f"質問{index} " + "あ" * 600)
+                store.add_message(session["id"], "assistant", "回答" + "い" * 600)
+            summarizer = FakeSummarizer()
+            memory = ContextMemoryManager(summarizer, store, context_window=4096)
+            tools = [{"type": "function", "function": {"name": "srv::t", "description": "x" * 9_000}}]
+
+            assembled = await memory.assemble(session["id"], "system", tools)
+            usage = await memory.context_usage(assembled, model="fake", response_content="ok")
+
+            self.assertEqual(summarizer.calls, [])
+            self.assertFalse(assembled.summary_created)
+            self.assertTrue(assembled.fixed_overflow)
+            self.assertTrue(usage["fixed_overflow"])
+            self.assertEqual(usage["conversation_budget"], 0)
+            self.assertEqual(usage["remaining_percent"], 0)
+
+    async def test_describe_tool_result_is_not_compacted(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = SessionStore(Path(raw) / "state")
+            session = store.create_session("chat", surface="general")
+            store.add_message(session["id"], "user", "詳細")
+            full = "説明" * 2000
+            store.add_message(
+                session["id"], "tool", full, {"tool_name": "use_lllm::describe_tool", "tool_reference": True}
+            )
+            memory = ContextMemoryManager(FakeSummarizer(), store, context_window=65536)
+
+            assembled = await memory.assemble(session["id"], "system", [])
+
+            self.assertEqual(assembled.messages[-1]["content"], full)
+
     async def test_context_window_is_retried_after_model_load(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             store = SessionStore(Path(raw) / "state")

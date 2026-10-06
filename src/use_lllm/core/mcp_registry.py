@@ -114,6 +114,13 @@ async def mcp_session(spec: MCPServerSpec) -> AsyncIterator[ClientSession]:
         ) from exc
 
 
+def _instructions_text(initialized: Any) -> str | None:
+    value = getattr(initialized, "instructions", None)
+    if not isinstance(value, str):
+        return None
+    return value.strip() or None
+
+
 @dataclass(frozen=True, slots=True)
 class RegisteredTool:
     server_name: str
@@ -205,6 +212,7 @@ class MCPRegistry:
                 resources=resources,
                 resource_templates=templates,
                 prompts=prompts,
+                instructions=_instructions_text(initialized),
             )
             self._snapshots[name] = snapshot
             self._errors.pop(name, None)
@@ -407,6 +415,15 @@ class MCPRegistry:
             if snapshot is not None:
                 values.extend(RegisteredTool(name, tool) for tool in snapshot.tools)
         return values
+
+    def server_instructions(self) -> dict[str, str]:
+        """接続中サーバのうち instructions を返したものだけを、サーバ名ごとに返す。"""
+
+        return {
+            name: snapshot.instructions
+            for name in self._order
+            if (snapshot := self._snapshots.get(name)) is not None and snapshot.instructions
+        }
 
     def tool_names(self) -> list[str]:
         return [tool.qualified_name for tool in self.tools()]
