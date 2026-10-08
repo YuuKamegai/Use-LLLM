@@ -7,7 +7,7 @@
 
   const SCHEMA = "lipidmix.volcano.v1";
 
-  // 配色は save_volcano_figure（matplotlib）と一致させ、PNG と画面で色が
+  // 配色は save_figure(kind=volcano)（matplotlib）と一致させ、PNG と画面で色が
   // 入れ替わらないようにする。ns を先に積んで有意点を上に描く。
   const GROUPS = [
     { sig: "ns", color: "#95a5a6", size: 4, opacity: 0.45 },

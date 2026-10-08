@@ -182,7 +182,7 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
 
         captured = await loop._call_and_record(
             self.session["id"],
-            "lipidmix::save_pca_figure",
+            "lipidmix::save_figure",
             {},
             approved=True,
             network_mode="offline",
@@ -204,7 +204,7 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         source = Path(self.temp.name) / "not-really.png"
         source.write_bytes(b"not a png")
         result = MCPToolResult(
-            "lipidmix::save_pca_figure",
+            "lipidmix::save_figure",
             False,
             ({"type": "text", "text": f"保存: {source}"},),
             None,
@@ -212,7 +212,7 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         loop = GeneralAgentLoop(FakeOllama([]), self.store, FakeRegistry({}))
 
         invalid = loop._capture_png_artifacts(
-            self.session["id"], "lipidmix::save_pca_figure", result
+            self.session["id"], "lipidmix::save_figure", result
         )
         unknown = loop._capture_png_artifacts(
             self.session["id"], "lipidmix::some_other_tool", result

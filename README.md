@@ -19,7 +19,7 @@ Use-LLLMインストーラーには含まれません。
 
 MCPサーバーは任意です。初期状態では何も登録せず、「接続と設定」からstdio、
 Streamable HTTP、SSEサーバーを追加するか、Claude Desktop設定JSONを取り込みます。
-`Lipidmix_with_LLM`の`save_pca_figure`、`save_volcano_figure`、`save_eic_figure`が
+`Lipidmix_with_LLM`の`save_figure`が
 PNGを保存した場合は、安全性を確認してセッション領域へコピーし、ツール結果の直下に表示します。
 画像をクリックすると原寸表示できます。元ファイルの絶対パスをブラウザーへ直接公開しません。
 

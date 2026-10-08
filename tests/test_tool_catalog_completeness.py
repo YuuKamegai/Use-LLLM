@@ -86,9 +86,10 @@ MS_DATA_PARSER_TOOLS = [
     "eic_rank_by_max_intensity",
     "eic_plot_chromatograms",
     "eic_plot_compounds",
-    "save_pca_figure",
-    "save_volcano_figure",
-    "save_eic_figure",
+    "save_figure",
+    "arf_plot_species",
+    "arf_pca_species",
+    "plot_pca_loadings",
     "list_data_files",
     "load_dataset",
 ]

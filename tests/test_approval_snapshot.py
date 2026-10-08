@@ -29,6 +29,9 @@ CURRENT_CLASSIFICATION: dict[str, ToolSafety] = {
     "arf_parser": READ_ONLY,
     "arf_differential": READ_ONLY,
     "arf_plot_volcano": READ_ONLY,
+    "arf_plot_species": READ_ONLY,
+    "arf_pca_species": READ_ONLY,
+    "plot_pca_loadings": READ_ONLY,
     "arf2_parser": READ_ONLY,
     "arf2_annotate_identities": READ_ONLY,
     "list_data_files": READ_ONLY,
@@ -52,9 +55,7 @@ CURRENT_CLASSIFICATION: dict[str, ToolSafety] = {
     "record_objective": LOCAL_WRITE,
     "update_objective": LOCAL_WRITE,
     "write_report": LOCAL_WRITE,
-    "save_pca_figure": LOCAL_WRITE,
-    "save_volcano_figure": LOCAL_WRITE,
-    "save_eic_figure": LOCAL_WRITE,
+    "save_figure": LOCAL_WRITE,
     "paper_search": EXTERNAL,
     "ingest_stage": MUTATION,
     "ingest_review_queue": MUTATION,
@@ -89,7 +90,7 @@ def expected_after_migration() -> dict[str, ToolSafety]:
 
 class CurrentClassificationSnapshotTests(unittest.TestCase):
     def test_snapshot_covers_every_ms_data_parser_tool(self) -> None:
-        self.assertEqual(len(CURRENT_CLASSIFICATION), 40)
+        self.assertEqual(len(CURRENT_CLASSIFICATION), 41)
 
 
 # Task 4 でサーバが宣言する annotations と同じ表。片方だけ変わったら落ちる。
