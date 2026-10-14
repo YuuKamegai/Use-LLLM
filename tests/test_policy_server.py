@@ -105,6 +105,25 @@ class DecideServerToolTests(unittest.TestCase):
         )
         self.assertTrue(literature.allowed)
 
+    def test_external_network_online_mode_still_requires_approval(self) -> None:
+        annotations = {"readOnlyHint": False, "openWorldHint": True}
+        unapproved = decide_server_tool(
+            "ms-data-parser",
+            "pathway_plot",
+            annotations=annotations,
+            network_mode="online",
+        )
+        self.assertFalse(unapproved.allowed)
+        self.assertTrue(unapproved.approval_required)
+        approved = decide_server_tool(
+            "ms-data-parser",
+            "pathway_plot",
+            annotations=annotations,
+            approved=True,
+            network_mode="online",
+        )
+        self.assertTrue(approved.allowed)
+
 
 if __name__ == "__main__":
     unittest.main()

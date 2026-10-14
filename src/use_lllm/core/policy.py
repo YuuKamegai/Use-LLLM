@@ -91,6 +91,11 @@ def writes_outside_server(annotations: Mapping[str, Any] | None) -> bool:
     return annotations.get("readOnlyHint") is False
 
 
+#: 外部通信ツールを通すネットワークモード。"literature-only" は文献検索だけを想定した旧名で、
+#: 互換のため "online" と同じ扱いにする。どちらでも実行前の承認は必要。
+NETWORK_ENABLED_MODES = frozenset({"online", "literature-only"})
+
+
 def decide_server_tool(
     server_name: str,
     tool_name: str,
@@ -120,7 +125,7 @@ def decide_server_tool(
             True,
             "read-only自動化が無効のため承認が必要です。",
         )
-    if safety == ToolSafety.EXTERNAL_NETWORK and network_mode != "literature-only":
+    if safety == ToolSafety.EXTERNAL_NETWORK and network_mode not in NETWORK_ENABLED_MODES:
         return ToolDecision(qualified, safety, False, True, "ネットワークモードがofflineです。")
     if not approved:
         return ToolDecision(qualified, safety, False, True, "明示的な承認が必要です。")

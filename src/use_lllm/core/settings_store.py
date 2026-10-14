@@ -27,6 +27,8 @@ class MCPServerSpec:
     env: tuple[tuple[str, str], ...] = ()
     autostart: bool = False
     read_only_auto: bool = False
+    #: 外部通信ツール（openWorldHint）を、どのセッションでも通す（実行前の承認は残る）。
+    allow_network: bool = False
     transport: str = "stdio"
     url: str | None = None
     headers: tuple[tuple[str, str], ...] = ()
@@ -108,6 +110,7 @@ def _server_to_json(spec: MCPServerSpec) -> dict[str, Any]:
         "env": [list(pair) for pair in spec.env],
         "autostart": spec.autostart,
         "read_only_auto": spec.read_only_auto,
+        "allow_network": spec.allow_network,
         "transport": spec.transport,
         "url": spec.url,
         "headers": [list(pair) for pair in spec.headers],
@@ -124,6 +127,7 @@ def _server_from_json(data: dict[str, Any]) -> MCPServerSpec:
         env=tuple((str(k), str(v)) for k, v in data.get("env", [])),
         autostart=bool(data.get("autostart", False)),
         read_only_auto=bool(data.get("read_only_auto", False)),
+        allow_network=bool(data.get("allow_network", False)),
         transport=str(data.get("transport", "stdio")),
         url=data.get("url"),
         headers=tuple((str(k), str(v)) for k, v in data.get("headers", [])),

@@ -265,6 +265,16 @@ class GeneralApiTests(unittest.TestCase):
                 },
             )
             self.assertEqual(created.status_code, 201, created.text)
+            listed = client.get("/api/settings").json()["mcp_servers"]
+            self.assertFalse(next(s for s in listed if s["name"] == "other")["allow_network"])
+            updated = client.put(
+                "/api/mcp-servers/other",
+                json={"name": "other", "command": "python", "args": ["server.py"],
+                      "allow_network": True},
+            )
+            self.assertEqual(updated.status_code, 200, updated.text)
+            listed = client.get("/api/settings").json()["mcp_servers"]
+            self.assertTrue(next(s for s in listed if s["name"] == "other")["allow_network"])
             connected = client.post("/api/mcp-servers/other/connect")
             self.assertEqual(connected.json()["status"], "connected")
             self.assertIn("other::danger", client.get("/api/tools").json()["tools"])

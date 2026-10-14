@@ -396,6 +396,7 @@ class MCPRegistry:
             if name in self._errors
             else "disconnected",
             "read_only_auto": spec.read_only_auto,
+            "allow_network": spec.allow_network,
             "tool_count": snapshot.tool_count if snapshot is not None else 0,
             "resource_count": len(snapshot.resources) if snapshot is not None else 0,
             "prompt_count": len(snapshot.prompts) if snapshot is not None else 0,
@@ -570,7 +571,8 @@ class MCPRegistry:
             annotations=tool.description.annotations,
             read_only_auto=spec.read_only_auto,
             approved=approved,
-            network_mode=network_mode,
+            # サーバ設定で外部通信を許可していれば、セッションのモードに関係なく通す。
+            network_mode="online" if spec.allow_network else network_mode,
         )
 
     async def call_tool(

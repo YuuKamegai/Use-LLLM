@@ -106,6 +106,7 @@ class MCPServerBody(StrictModel):
     env: dict[str, str] | None = None
     autostart: bool = False
     read_only_auto: bool = False
+    allow_network: bool = False
     transport: str = "stdio"
     url: str | None = None
     headers: dict[str, str] | None = None
@@ -299,6 +300,7 @@ class GeneralRuntime:
                     "auth_mode": item.auth_mode,
                     "autostart": item.autostart,
                     "read_only_auto": item.read_only_auto,
+                    "allow_network": item.allow_network,
                 }
                 for item in self.settings.mcp_servers
             ],
@@ -353,6 +355,7 @@ def _server(body: MCPServerBody, existing: MCPServerSpec | None = None) -> MCPSe
         env=env,
         autostart=body.autostart,
         read_only_auto=body.read_only_auto,
+        allow_network=body.allow_network,
         transport=body.transport,
         url=(body.url or "").strip() or None,
         headers=headers,

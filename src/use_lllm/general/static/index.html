@@ -165,7 +165,8 @@
           <label>HTTP headers（KEY=VALUE、1行1件）<textarea id="server-headers" rows="3"></textarea></label>
           <label class="check-row"><input id="server-autostart" type="checkbox">起動時に接続を試す</label>
           <label class="check-row"><input id="server-readonly" type="checkbox">確定read-onlyツールを自動実行</label>
-          <p class="form-warning">未知・書き込み・外部通信ツールは、この設定に関係なく実行前に確認します。</p>
+          <label class="check-row"><input id="server-network" type="checkbox">外部通信ツールを許可（全セッション）</label>
+          <p class="form-warning">未知・書き込み・外部通信ツールは、この設定に関係なく実行前に確認します。外部通信ツールは、許可しない限り実行できません。</p>
           <div class="form-actions"><button type="button" class="button quiet form-cancel">取消</button><button class="button primary">保存</button></div>
         </form>
       </section>

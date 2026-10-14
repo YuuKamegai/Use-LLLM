@@ -259,3 +259,47 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AllowNetworkTests(unittest.IsolatedAsyncioTestCase):
+    """サーバ設定 allow_network: offline のセッションでも外部通信ツールを通す（承認は残す）。"""
+
+    def setUp(self) -> None:
+        tool = FakeTool(
+            "pathway_plot",
+            {"type": "object"},
+            annotations={"readOnlyHint": False, "openWorldHint": True},
+        )
+
+        @asynccontextmanager
+        async def factory(_spec):
+            yield FakeSession([tool])
+
+        self.factory = factory
+
+    async def _registry(self, allow_network: bool) -> MCPRegistry:
+        registry = MCPRegistry(
+            [MCPServerSpec("ms-data-parser", "python", allow_network=allow_network)],
+            session_factory=self.factory,
+        )
+        await registry.connect("ms-data-parser")
+        return registry
+
+    async def test_offline_server_blocks_external_tool(self) -> None:
+        registry = await self._registry(False)
+        decision = registry.decide("ms-data-parser::pathway_plot", approved=True)
+        self.assertFalse(decision.allowed)
+
+    async def test_allow_network_admits_external_tool_after_approval(self) -> None:
+        registry = await self._registry(True)
+        unapproved = registry.decide("ms-data-parser::pathway_plot", network_mode="offline")
+        self.assertFalse(unapproved.allowed)
+        self.assertTrue(unapproved.approval_required)
+        approved = registry.decide(
+            "ms-data-parser::pathway_plot", approved=True, network_mode="offline"
+        )
+        self.assertTrue(approved.allowed)
+
+    async def test_status_reports_allow_network(self) -> None:
+        registry = await self._registry(True)
+        self.assertTrue(registry.status("ms-data-parser")["allow_network"])

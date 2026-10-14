@@ -74,6 +74,7 @@ class RoundTripTests(unittest.TestCase):
                     command="python",
                     args=("server.py",),
                     read_only_auto=True,
+                    allow_network=True,
                 ),
                 MCPServerSpec(name="other", command="node", args=("mcp.js",), env=(("K", "V"),)),
             ),
@@ -88,6 +89,13 @@ class RoundTripTests(unittest.TestCase):
         self.assertEqual(azure["context_window"], 400_000)
         self.assertNotIn("secret", json.dumps(payload))
         self.assertEqual(settings_from_json(payload), settings)
+
+    def test_legacy_server_without_allow_network_loads_as_offline(self) -> None:
+        payload = settings_to_json(self._settings())
+        for server in payload["mcp_servers"]:
+            server.pop("allow_network", None)
+        loaded = settings_from_json(payload)
+        self.assertFalse(any(spec.allow_network for spec in loaded.mcp_servers))
 
     def test_save_then_load_is_equal(self) -> None:
         settings = self._settings()

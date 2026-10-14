@@ -365,6 +365,7 @@ function openServerForm(item = null) {
   $("#server-headers").placeholder = item?.header_keys?.length ? t`保存済みキー: ${item.header_keys.join(", ")}（空欄なら保持）` : "Authorization=Bearer ...";
   $("#server-autostart").checked = Boolean(item?.autostart);
   $("#server-readonly").checked = Boolean(item?.read_only_auto);
+  $("#server-network").checked = Boolean(item?.allow_network);
   $("#server-name").focus();
 }
 
@@ -392,6 +393,7 @@ async function saveServer(event) {
       headers: original && !headerText.trim() ? null : parsePairs(headerText),
       autostart: $("#server-autostart").checked,
       read_only_auto: $("#server-readonly").checked,
+      allow_network: $("#server-network").checked,
     };
     state.settings = await api(original ? `mcp-servers/${encodeURIComponent(original)}` : "mcp-servers", { method: original ? "PUT" : "POST", body: JSON.stringify(payload) });
     $("#server-form").classList.add("hidden"); renderServerList(); await loadTools();

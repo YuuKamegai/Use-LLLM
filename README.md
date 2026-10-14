@@ -51,6 +51,11 @@ GPT-5.4 miniなどの既知モデルではAzureのモデル上限を自動適用
 したがって、プロンプトだけでなく、モデルへ読ませるMCPツール定義と実行結果もAzureへ
 送信されます。既存のread-only自動実行、承認ゲート、セッション別MCP状態復元は維持されます。
 
+外部通信を伴うMCPツール（`openWorldHint`。例: ms-data-parserの`pathway_plot`はunpkg.comから
+描画部品を取得する）は既定で実行できません。MCPサーバー設定の「外部通信ツールを許可（全セッション）」
+をオンにすると、そのサーバーの外部通信ツールをすべてのセッションで使えます。許可しても、
+実行前の確認は毎回求めます。
+
 API keyはWindows DPAPIのCurrentUserスコープで暗号化してからローカルの`settings.json`へ
 保存し、`/api/settings`やWebUIへ値を返しません。旧版の平文API keyは、同じWindows
 ユーザーで初回に読み込んだとき自動的に暗号化形式へ移行します。暗号化されたキーは通常、
