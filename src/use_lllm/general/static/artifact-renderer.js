@@ -3,6 +3,11 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GeneralArtifacts = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  const t = (...args) => {
+    if (globalThis.GeneralI18n) return globalThis.GeneralI18n.t(...args);
+    return typeof args[0] === "string" ? args[0] : args[0].reduce((text, part, index) => text + part + (args[index + 1] ?? ""), "");
+  };
+
   const SAFE_ARTIFACT_IMAGE_URL = /^\.\/api\/sessions\/[A-Za-z0-9-]+\/artifacts\/[^/?#]+$/;
 
   function imageSource(block) {
@@ -35,7 +40,7 @@
           link.href = source;
           link.target = "_blank";
           link.rel = "noreferrer";
-          link.title = "画像を原寸で開く";
+          link.title = t("画像を原寸で開く");
           link.append(image);
           container.append(link);
         } else {
@@ -51,7 +56,7 @@
     }
     if (metadata.structured_content) {
       const details = document.createElement("details");
-      const summary = document.createElement("summary"); summary.textContent = "構造化データ";
+      const summary = document.createElement("summary"); summary.textContent = t("構造化データ");
       const pre = document.createElement("pre"); pre.textContent = JSON.stringify(metadata.structured_content, null, 2);
       details.append(summary, pre); container.append(details);
     }

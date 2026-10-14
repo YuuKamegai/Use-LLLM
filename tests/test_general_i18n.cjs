@@ -1,0 +1,14 @@
+const assert = require('node:assert/strict');
+const i18n = require('../src/use_lllm/general/static/i18n.js');
+i18n.setLanguage('en', false);
+assert.equal(i18n.t('履歴を削除'), 'Delete history');
+assert.equal(i18n.t`AI接続「${'<img src=x>'}」を削除しますか？`, 'Delete AI connection “<img src=x>”?');
+assert.equal(i18n.t('接続と設定'), 'Connections & settings');
+const savedKeys = i18n.t`保存済みキー: ${'TOKEN'}（空欄なら保持）`;
+assert.equal(i18n.t('user-defined title'), 'user-defined title');
+i18n.setLanguage('ja', false);
+assert.equal(i18n.retranslate(savedKeys), '保存済みキー: TOKEN（空欄なら保持）');
+assert.equal(i18n.t('履歴を削除'), '履歴を削除');
+assert.equal(i18n.t`AI接続「${'demo'}」を削除しますか？`, 'AI接続「demo」を削除しますか？');
+assert.throws(() => i18n.setLanguage('invalid', false));
+console.log('general i18n tests passed');

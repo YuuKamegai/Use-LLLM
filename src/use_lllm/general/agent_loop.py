@@ -125,7 +125,11 @@ class GeneralAgentLoop:
 
         new_title = None
         has_user_message = any(item["role"] == "user" for item in session["messages"])
-        if session["title"] == DEFAULT_GENERAL_SESSION_TITLE and not has_user_message:
+        if (
+            session["title"] in {DEFAULT_GENERAL_SESSION_TITLE, "New chat"}
+            and not session["state"].get("title_manually_set")
+            and not has_user_message
+        ):
             new_title = " ".join(text.split())[:GENERAL_SESSION_TITLE_LIMIT]
             self.sessions.update_session(session_id, title=new_title)
 

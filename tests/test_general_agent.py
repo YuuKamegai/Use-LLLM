@@ -174,6 +174,19 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.store.get_session(self.session["id"])["title"], "chat")
 
+    async def test_manually_named_default_title_is_preserved(self) -> None:
+        session = self.store.create_session("新しいチャット", surface="general")
+        self.store.update_session(session["id"], state_patch={"title_manually_set": True})
+        loop = GeneralAgentLoop(FakeOllama([response("了解")]), self.store, FakeRegistry({}))
+        await loop.chat(session["id"], "最初の質問")
+        self.assertEqual(self.store.get_session(session["id"])["title"], "新しいチャット")
+
+    async def test_english_default_title_uses_first_message(self) -> None:
+        session = self.store.create_session("New chat", surface="general")
+        loop = GeneralAgentLoop(FakeOllama([response("OK")]), self.store, FakeRegistry({}))
+        await loop.chat(session["id"], "My first question")
+        self.assertEqual(self.store.get_session(session["id"])["title"], "My first question")
+
     async def test_lipidmix_saved_png_is_copied_into_session_artifacts(self) -> None:
         source = Path(self.temp.name) / "pca-result.png"
         png = b"\x89PNG\r\n\x1a\n" + b"test-image"

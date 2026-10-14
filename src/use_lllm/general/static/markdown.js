@@ -45,7 +45,8 @@
   function renderMarkdown(source) {
     const fragments = [];
     let held = String(source ?? "").replace(/```([^\n]*)\n?([\s\S]*?)```/g, (_all, lang, code) => {
-      const block = `<div class="code-block"><button type="button" class="copy-code">コピー</button><pre><code data-language="${escapeHtml(lang.trim())}">${escapeHtml(code.replace(/^\n|\n$/g, ""))}</code></pre></div>`;
+      const copyLabel = globalThis.GeneralI18n?.t("コピー") || "コピー";
+      const block = `<div class="code-block"><button type="button" class="copy-code">${copyLabel}</button><pre><code data-language="${escapeHtml(lang.trim())}">${escapeHtml(code.replace(/^\n|\n$/g, ""))}</code></pre></div>`;
       return hold(fragments, block, true);
     });
     held = held

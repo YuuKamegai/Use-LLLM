@@ -251,3 +251,12 @@ body.resizing-frame, body.resizing-frame * { cursor: ns-resize !important; user-
   .composer-meta { gap: 7px; }
   .context-meter-track { width: 34px; }
 }
+.conversation-heading { display:flex; align-items:center; gap:12px; }
+.conversation-name { min-width:0; flex:1; }
+.session-name.eyebrow { display:block; width:min(100%, 34rem); font:inherit; font-size:13px; color:var(--muted); text-transform:none; letter-spacing:normal; background:transparent; border:1px solid transparent; border-radius:6px; padding:5px 7px; }
+.session-name:hover, .session-name:focus { border-color:var(--line, #d8d4ca); background:var(--paper, #fff); }
+.conversation-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px; }
+.language-toggle { display:flex; gap:4px; margin-top:10px; }
+.language-toggle button { padding:8px 16px; background:transparent; border:1px solid #d8d4ca; border-radius:8px; cursor:pointer; }
+.language-toggle button[aria-pressed="true"] { background:#353c32; color:#fff; }
+@media (max-width:720px) { .conversation-heading { flex-wrap:wrap; } .conversation-actions { width:100%; } }

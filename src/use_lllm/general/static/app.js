@@ -1,11 +1,12 @@
 const $ = (selector) => document.querySelector(selector);
+const t = window.GeneralI18n.t;
 const csrfToken = document.querySelector('meta[name="use-lllm-csrf-token"]')?.content || "";
 const unsafeMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 function requestHeaders(method = "GET", headers = {}) {
   const result = { "Content-Type": "application/json", ...headers };
   if (unsafeMethods.has(method.toUpperCase())) {
-    if (!csrfToken || csrfToken === "__USE_LLLM_CSRF_TOKEN__") throw new Error("ローカルAPIの起動トークンがありません。WebUIを再読み込みしてください。");
+    if (!csrfToken || csrfToken === "__USE_LLLM_CSRF_TOKEN__") throw new Error(t("ローカルAPIの起動トークンがありません。WebUIを再読み込みしてください。"));
     result["X-Use-LLLM-CSRF"] = csrfToken;
   }
   return result;
@@ -40,7 +41,7 @@ async function api(path, options = {}) {
 let toastTimer;
 function toast(message, error = false) {
   const node = $("#toast");
-  node.textContent = message;
+  node.textContent = t(message);
   node.className = `show${error ? " error" : ""}`;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { node.className = ""; }, 3400);
@@ -48,7 +49,7 @@ function toast(message, error = false) {
 
 function formatDate(value) {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
+  return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat(GeneralI18n.language() === "ja" ? "ja-JP" : "en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
 function formatTokenCount(value) {
@@ -67,9 +68,9 @@ function renderContextUsage() {
   meter.classList.remove("unknown", "warning", "critical");
   if (!usage || !Number.isFinite(remaining)) {
     meter.classList.add("unknown");
-    label.textContent = "コンテキスト —";
+    label.textContent = t("コンテキスト —");
     fill.style.width = "0%";
-    meter.title = "最初の応答後に推定します";
+    meter.title = t("最初の応答後に推定します");
     return;
   }
   const percent = Math.max(0, Math.min(100, Math.round(remaining)));
@@ -78,20 +79,20 @@ function renderContextUsage() {
   if (overflow || percent < 15) meter.classList.add("critical");
   else if (percent < 40) meter.classList.add("warning");
   label.textContent = overflow
-    ? "ツール定義が予算超過"
-    : `${provisional ? "暫定残り" : "残りコンテキスト"} ${percent}%`;
+    ? t("ツール定義が予算超過")
+    : `${provisional ? t("暫定残り") : t("残りコンテキスト")} ${percent}%`;
   fill.style.width = `${percent}%`;
-  const compacted = usage.summary_created ? " 古い会話は直前の応答で要約されました。" : "";
-  const source = provisional ? "モデル上限未確認の暫定値。" : "";
-  const accuracy = usage.accuracy === "measured" ? "トークン使用量は実測。" : "トークン使用量は推定を含みます。";
+  const compacted = usage.summary_created ? t(" 古い会話は直前の応答で要約されました。") : "";
+  const source = provisional ? t("モデル上限未確認の暫定値。") : "";
+  const accuracy = usage.accuracy === "measured" ? t("トークン使用量は実測。") : t("トークン使用量は推定を含みます。");
   // ツール定義とシステムプロンプトは要約しても減らない固定費なので、会話枠と分けて示す。
   const fixed = Number.isFinite(Number(usage.fixed_tokens))
-    ? `固定費（ツール定義・システム指示）${formatTokenCount(usage.fixed_tokens)}、会話枠 ${formatTokenCount(usage.conversation_budget)}。`
+    ? t`固定費（ツール定義・システム指示）${formatTokenCount(usage.fixed_tokens)}、会話枠 ${formatTokenCount(usage.conversation_budget)}。`
     : "";
   const advice = overflow
-    ? "固定費だけで入力予算を超えているため自動要約を止めています。num_ctx を上げるか、不要なツールを無効化してください。"
+    ? t("固定費だけで入力予算を超えているため自動要約を止めています。num_ctx を上げるか、不要なツールを無効化してください。")
     : "";
-  meter.title = `${advice}${source}自動要約まで ${formatTokenCount(usage.remaining_tokens)} / ${formatTokenCount(usage.input_budget)} tokens。${fixed}使用 ${formatTokenCount(usage.used_tokens)}、モデル上限 ${formatTokenCount(usage.context_window)}。${accuracy}${compacted}`.trim();
+  meter.title = t`${advice}${source}自動要約まで ${formatTokenCount(usage.remaining_tokens)} / ${formatTokenCount(usage.input_budget)} tokens。${fixed}使用 ${formatTokenCount(usage.used_tokens)}、モデル上限 ${formatTokenCount(usage.context_window)}。${accuracy}${compacted}`.trim();
 }
 
 async function loadSetup() {
@@ -109,8 +110,8 @@ function renderSetup() {
   const ollama = setup.ollama || {};
   const models = Array.isArray(ollama.models) ? ollama.models : [];
   $("#setup-ollama-status").textContent = ollama.status === "unavailable"
-    ? `未接続: ${ollama.error || "Ollamaをインストールして起動してください。"}`
-    : `接続済み · ${models.length}モデル`;
+    ? t`未接続: ${ollama.error || t("Ollamaをインストールして起動してください。")}`
+    : t`接続済み · ${models.length}モデル`;
   const datalist = $("#setup-models"); datalist.textContent = "";
   for (const model of models) { const option = document.createElement("option"); option.value = model; datalist.append(option); }
   const input = $("#setup-model");
@@ -122,7 +123,7 @@ function setupProgress(item) {
   const completed = Number(item.completed || 0); const total = Number(item.total || 0);
   const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
   $("#setup-progress-bar").style.width = `${percent}%`;
-  $("#setup-progress-label").textContent = total > 0 ? `${item.status || "取得中"} · ${percent}%` : item.status || "取得中";
+  $("#setup-progress-label").textContent = total > 0 ? `${item.status || t("取得中")} · ${percent}%` : item.status || t("取得中");
 }
 
 async function pullSetupModel() {
@@ -149,7 +150,7 @@ async function completeSetup() {
   try {
     await api("setup/complete", { method: "POST", body: JSON.stringify({ model }) });
     await Promise.all([loadSetup(), loadSettings(), loadStatus()]);
-    toast("初回セットアップが完了しました。");
+    toast(t("初回セットアップが完了しました。"));
   } catch (error) { $("#setup-error").textContent = error.message; }
   finally { if (!state.setup?.completed) $("#setup-complete").disabled = false; }
 }
@@ -161,7 +162,7 @@ async function configureAzureFromSetup() {
     await Promise.all([loadSetup(), loadSettings()]);
     $("#settings-panel").classList.add("open");
     openEndpointForm(null, "azure_openai");
-    toast("Azure OpenAIの接続情報を入力してください。");
+    toast(t("Azure OpenAIの接続情報を入力してください。"));
   } catch (error) { $("#setup-error").textContent = error.message; }
 }
 
@@ -181,15 +182,15 @@ function renderEndpointBanner() {
   const endpoint = selectedEndpoint();
   const banner = $("#endpoint-banner");
   if (!endpoint) {
-    banner.querySelector("strong").textContent = "未設定";
+    banner.querySelector("strong").textContent = t("未設定");
     return;
   }
   const azure = endpoint.provider === "azure_openai";
   const remote = endpoint.trust !== "loopback";
   banner.classList.toggle("remote", remote);
-  banner.querySelector("small").textContent = azure ? "Azure OpenAI" : remote ? "LAN送信先" : "ローカル送信先";
-  banner.querySelector("strong").textContent = `${endpoint.name} · ${endpoint.base_url} · ${endpoint.default_model || "モデル未設定"}`;
-  banner.title = remote ? `プロンプトとMCPツール結果は ${endpoint.base_url} へ送信されます` : "このPC上のOllamaへ送信します";
+  banner.querySelector("small").textContent = azure ? "Azure OpenAI" : remote ? t("LAN送信先") : t("ローカル送信先");
+  banner.querySelector("strong").textContent = `${endpoint.name} · ${endpoint.base_url} · ${endpoint.default_model || t("モデル未設定")}`;
+  banner.title = remote ? t`プロンプトとMCPツール結果は ${endpoint.base_url} へ送信されます` : t("このPC上のOllamaへ送信します");
 }
 
 function actionButton(label, handler, className = "mini-button") {
@@ -215,18 +216,18 @@ function renderEndpointList() {
     const detail = document.createElement("small");
     const provider = item.provider === "azure_openai" ? "Azure OpenAI" : "Ollama";
     const context = item.context_window ? ` · context ${formatTokenCount(item.context_window)}` : "";
-    detail.textContent = `${provider} · ${item.base_url} · ${item.default_model || "モデル未設定"}${context}`;
+    detail.textContent = `${provider} · ${item.base_url} · ${item.default_model || t("モデル未設定")}${context}`;
     info.append(title, detail);
     const chip = document.createElement("span");
     chip.className = `state-chip${item.name === state.settings.selected_endpoint ? "" : " off"}`;
-    chip.textContent = item.name === state.settings.selected_endpoint ? "選択中" : item.trust;
+    chip.textContent = item.name === state.settings.selected_endpoint ? t("選択中") : item.trust;
     top.append(info, chip);
     const actions = document.createElement("div");
     actions.className = "connection-actions";
-    if (item.name !== state.settings.selected_endpoint) actions.append(actionButton("選択", () => selectEndpoint(item.name)));
-    actions.append(actionButton("接続テスト", () => testEndpoint(item.name)));
-    actions.append(actionButton("編集", () => openEndpointForm(item)));
-    actions.append(actionButton("削除", () => deleteEndpoint(item.name), "mini-button danger-text"));
+    if (item.name !== state.settings.selected_endpoint) actions.append(actionButton(t("選択"), () => selectEndpoint(item.name)));
+    actions.append(actionButton(t("接続テスト"), () => testEndpoint(item.name)));
+    actions.append(actionButton(t("編集"), () => openEndpointForm(item)));
+    actions.append(actionButton(t("削除"), () => deleteEndpoint(item.name), "mini-button danger-text"));
     card.append(top, actions);
     list.append(card);
   }
@@ -238,10 +239,10 @@ function updateEndpointProviderFields() {
   $("#endpoint-api-key-row").classList.toggle("hidden", !azure);
   $("#endpoint-context-window-row").classList.toggle("hidden", !azure);
   $("#endpoint-url").placeholder = azure ? "https://YOUR-RESOURCE.openai.azure.com" : "http://127.0.0.1:11434";
-  $("#endpoint-model").placeholder = azure ? "Azureのdeployment名" : "qwen3:14b";
+  $("#endpoint-model").placeholder = azure ? t("Azureのdeployment名") : "qwen3:14b";
   $("#endpoint-provider-help").textContent = azure
-    ? "Azure portalのEndpoint、deployment名、API keyを入力してください。ローカルMCPはこのPCで実行されます。"
-    : "Ollamaのローカルまたは明示許可したLAN endpointを指定します。";
+    ? t("Azure portalのEndpoint、deployment名、API keyを入力してください。ローカルMCPはこのPCで実行されます。")
+    : t("Ollamaのローカルまたは明示許可したLAN endpointを指定します。");
   if (azure) $("#endpoint-trust").value = "cloud_allowed";
   else if ($("#endpoint-trust").value === "cloud_allowed") $("#endpoint-trust").value = "loopback";
   if (creating && azure && $("#endpoint-url").value === "http://127.0.0.1:11434") $("#endpoint-url").value = "";
@@ -263,7 +264,7 @@ function openEndpointForm(item = null, requestedProvider = null) {
   $("#endpoint-api-key").value = "";
   $("#endpoint-context-window").value = item?.context_window || "";
   $("#endpoint-api-key").placeholder = item?.api_key_configured
-    ? "保存済み（同じEndpointなら空欄で保持、変更時は再入力）"
+    ? t("保存済み（同じEndpointなら空欄で保持、変更時は再入力）")
     : "Azure OpenAI API key";
   $("#endpoint-trust").value = item?.trust || (provider === "azure_openai" ? "cloud_allowed" : "loopback");
   updateEndpointProviderFields();
@@ -288,7 +289,7 @@ async function saveEndpoint(event) {
     state.settings = await api(original ? `endpoints/${encodeURIComponent(original)}` : "endpoints", { method: original ? "PUT" : "POST", body: JSON.stringify(payload) });
     $("#endpoint-form").classList.add("hidden");
     renderEndpointBanner(); renderEndpointList(); renderServerList(); await loadTools();
-    toast("AI接続を保存しました。");
+    toast(t("AI接続を保存しました。"));
   } catch (error) { toast(error.message, true); }
 }
 
@@ -296,19 +297,19 @@ async function selectEndpoint(name) {
   try {
     state.settings = await api(`endpoints/${encodeURIComponent(name)}/select`, { method: "POST" });
     renderEndpointBanner(); renderEndpointList();
-    toast(`${name} を送信先に選択しました。`);
+    toast(t`${name} を送信先に選択しました。`);
   } catch (error) { toast(error.message, true); }
 }
 
 async function testEndpoint(name) {
   try {
     const result = await api(`endpoints/${encodeURIComponent(name)}/test`, { method: "POST" });
-    toast(`${name}: ${result.status || "接続成功"}`);
+    toast(`${name}: ${result.status || t("接続成功")}`);
   } catch (error) { toast(error.message, true); }
 }
 
 async function deleteEndpoint(name) {
-  if (!confirm(`AI接続「${name}」を削除しますか？`)) return;
+  if (!confirm(t`AI接続「${name}」を削除しますか？`)) return;
   try {
     state.settings = await api(`endpoints/${encodeURIComponent(name)}`, { method: "DELETE" });
     renderEndpointBanner(); renderEndpointList();
@@ -322,7 +323,7 @@ function serverStatus(name) {
 function renderServerList() {
   const list = $("#server-list");
   list.textContent = "";
-  if (!state.settings.mcp_servers.length) list.innerHTML = '<p class="muted">MCPサーバーは未登録です。</p>';
+  if (!state.settings.mcp_servers.length) list.innerHTML = t('<p class="muted">MCPサーバーは未登録です。</p>');
   for (const item of state.settings.mcp_servers) {
     const status = serverStatus(item.name);
     const card = document.createElement("article");
@@ -338,10 +339,10 @@ function renderServerList() {
     chip.textContent = status.status === "connected" ? `${status.tool_count} tools` : status.status;
     top.append(info, chip);
     const actions = document.createElement("div"); actions.className = "connection-actions";
-    actions.append(actionButton(status.status === "connected" ? "切断" : "接続", () => toggleServer(item.name, status.status === "connected")));
-    actions.append(actionButton("診断", () => diagnoseServer(item.name)));
-    actions.append(actionButton("編集", () => openServerForm(item)));
-    actions.append(actionButton("削除", () => deleteServer(item.name), "mini-button danger-text"));
+    actions.append(actionButton(status.status === "connected" ? t("切断") : t("接続"), () => toggleServer(item.name, status.status === "connected")));
+    actions.append(actionButton(t("診断"), () => diagnoseServer(item.name)));
+    actions.append(actionButton(t("編集"), () => openServerForm(item)));
+    actions.append(actionButton(t("削除"), () => deleteServer(item.name), "mini-button danger-text"));
     card.append(top, actions);
     if (status.error) { const error = document.createElement("small"); error.className = "danger-text"; error.textContent = status.error; card.append(error); }
     list.append(card);
@@ -359,9 +360,9 @@ function openServerForm(item = null) {
   $("#server-url").value = item?.url || "";
   $("#server-auth").value = item?.auth_mode || "none";
   $("#server-env").value = "";
-  $("#server-env").placeholder = item?.env_keys?.length ? `保存済みキー: ${item.env_keys.join(", ")}（空欄なら保持）` : "KEY=VALUE";
+  $("#server-env").placeholder = item?.env_keys?.length ? t`保存済みキー: ${item.env_keys.join(", ")}（空欄なら保持）` : "KEY=VALUE";
   $("#server-headers").value = "";
-  $("#server-headers").placeholder = item?.header_keys?.length ? `保存済みキー: ${item.header_keys.join(", ")}（空欄なら保持）` : "Authorization=Bearer ...";
+  $("#server-headers").placeholder = item?.header_keys?.length ? t`保存済みキー: ${item.header_keys.join(", ")}（空欄なら保持）` : "Authorization=Bearer ...";
   $("#server-autostart").checked = Boolean(item?.autostart);
   $("#server-readonly").checked = Boolean(item?.read_only_auto);
   $("#server-name").focus();
@@ -370,7 +371,7 @@ function openServerForm(item = null) {
 function parsePairs(value) {
   return Object.fromEntries(value.split(/\r?\n/).filter((line) => line.trim()).map((line) => {
     const index = line.indexOf("=");
-    if (index < 1) throw new Error(`KEY=VALUE形式ではありません: ${line}`);
+    if (index < 1) throw new Error(t`KEY=VALUE形式ではありません: ${line}`);
     return [line.slice(0, index).trim(), line.slice(index + 1)];
   }));
 }
@@ -394,7 +395,7 @@ async function saveServer(event) {
     };
     state.settings = await api(original ? `mcp-servers/${encodeURIComponent(original)}` : "mcp-servers", { method: original ? "PUT" : "POST", body: JSON.stringify(payload) });
     $("#server-form").classList.add("hidden"); renderServerList(); await loadTools();
-    toast("MCPサーバー設定を保存しました。");
+    toast(t("MCPサーバー設定を保存しました。"));
   } catch (error) { toast(error.message, true); }
 }
 
@@ -411,12 +412,12 @@ async function toggleServer(name, connected) {
     const index = state.settings.mcp_statuses.findIndex((item) => item.name === name);
     if (index >= 0) state.settings.mcp_statuses[index] = status; else state.settings.mcp_statuses.push(status);
     renderServerList(); await loadTools();
-    toast(`${name} を${connected ? "切断" : "接続"}しました。`);
+    toast(t`${name} を${connected ? t("切断") : t("接続")}しました。`);
   } catch (error) { toast(error.message, true); await loadSettings(); }
 }
 
 async function deleteServer(name) {
-  if (!confirm(`MCPサーバー「${name}」を削除しますか？`)) return;
+  if (!confirm(t`MCPサーバー「${name}」を削除しますか？`)) return;
   try { state.settings = await api(`mcp-servers/${encodeURIComponent(name)}`, { method: "DELETE" }); renderServerList(); await loadTools(); }
   catch (error) { toast(error.message, true); }
 }
@@ -426,7 +427,7 @@ async function loadTools() {
   state.tools = result.tools;
   $("#tool-count").textContent = String(state.tools.length);
   const list = $("#tool-list"); list.textContent = "";
-  if (!state.tools.length) { list.innerHTML = '<p class="muted">MCPサーバーを接続すると表示されます。</p>'; return; }
+  if (!state.tools.length) { list.innerHTML = t('<p class="muted">MCPサーバーを接続すると表示されます。</p>'); return; }
   const disabled = new Set(state.current?.state?.disabled_tools || []);
   for (const name of state.tools) {
     const label = document.createElement("label"); label.className = "tool-pill tool-toggle";
@@ -437,7 +438,7 @@ async function loadTools() {
 }
 
 async function updateToolPreference(name, enabled) {
-  if (!state.current) { toast("先にチャットを作成してください。", true); await loadTools(); return; }
+  if (!state.current) { toast(t("先にチャットを作成してください。"), true); await loadTools(); return; }
   const disabled = new Set(state.current.state.disabled_tools || []);
   if (enabled) disabled.delete(name); else disabled.add(name);
   try {
@@ -457,8 +458,8 @@ async function loadStatus() {
     const dot = document.createElement("span");
     dot.className = "status-dot";
     dot.style.background = ready ? "var(--green)" : "var(--amber)";
-    summary.append(dot, document.createTextNode(ready ? `${provider}準備完了` : `${provider}: ${model.status}`));
-  } catch (error) { $("#system-summary").textContent = "接続状態を取得できません"; }
+    summary.append(dot, document.createTextNode(ready ? t`${provider}準備完了` : `${provider}: ${model.status}`));
+  } catch (error) { $("#system-summary").textContent = t("接続状態を取得できません"); }
 }
 
 async function loadSessions(selectId = null) {
@@ -470,7 +471,7 @@ async function loadSessions(selectId = null) {
 
 function renderSessionList() {
   const list = $("#session-list"); list.textContent = "";
-  if (!state.sessions.length) { const empty = document.createElement("p"); empty.className = "muted"; empty.textContent = "まだチャットはありません。"; list.append(empty); }
+  if (!state.sessions.length) { const empty = document.createElement("p"); empty.className = "muted"; empty.textContent = t("まだチャットはありません。"); list.append(empty); }
   for (const session of state.sessions) {
     const button = document.createElement("button"); button.className = `session-item${state.current?.id === session.id ? " active" : ""}`;
     const title = document.createElement("strong"); title.textContent = session.title;
@@ -479,7 +480,7 @@ function renderSessionList() {
   }
 }
 
-async function createSession(title = "新しいチャット") {
+async function createSession(title = t("新しいチャット")) {
   try {
     const created = await api("sessions", { method: "POST", body: JSON.stringify({ title }) });
     await loadSessions(created.id); $("#chat-input").focus();
@@ -491,6 +492,7 @@ async function openSession(id) {
   state.current = await api(`sessions/${id}`);
   $("#welcome").classList.add("hidden"); $("#chat-workspace").classList.remove("hidden");
   $("#session-title").textContent = state.current.title;
+  $("#session-name").value = state.current.title;
   renderSessionList(); renderMessages(); renderContextUsage(); await loadTools();
 }
 
@@ -500,11 +502,74 @@ function applySessionTitle(title) {
   const summary = state.sessions.find((item) => item.id === state.current.id);
   if (summary) summary.title = title;
   $("#session-title").textContent = title;
+  if (document.activeElement !== $("#session-name")) $("#session-name").value = title;
   renderSessionList();
 }
 
+let renamePending = null;
+async function renameCurrentSession() {
+  if (renamePending) return renamePending;
+  const input = $("#session-name");
+  const session = state.current;
+  if (!session) return;
+  const title = input.value.trim();
+  if (!title || title === session.title) { input.value = session.title; return; }
+  input.disabled = true;
+  renamePending = (async () => {
+    try {
+      const updated = await api(`sessions/${session.id}`, { method: "PATCH", body: JSON.stringify({ title }) });
+      const summary = state.sessions.find((item) => item.id === session.id);
+      if (summary) { summary.title = updated.title; summary.updated_at = updated.updated_at; }
+      if (state.current?.id === session.id) {
+        state.current.state.title_manually_set = true;
+        applySessionTitle(updated.title); input.value = updated.title;
+      }
+      renderSessionList();
+    } catch (error) {
+      if (state.current?.id === session.id) input.value = session.title;
+      toast(error.message, true);
+      throw error;
+    } finally { input.disabled = false; }
+  })();
+  try { return await renamePending; } finally { renamePending = null; }
+}
+
+async function exportCurrentSession() {
+  if (!state.current) return;
+  const session = state.current;
+  const button = $("#export-session"); button.disabled = true;
+  try {
+    await renameCurrentSession();
+    const response = await fetch(`./api/sessions/${session.id}/export?language=${GeneralI18n.language()}`);
+    if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a"); link.href = url;
+    link.download = `${session.title.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").slice(0, 100) || "session"}.html`;
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (error) { toast(error.message, true); }
+  finally { button.disabled = false; }
+}
+
+async function changeLanguage(language) {
+  GeneralI18n.setLanguage(language);
+  GeneralI18n.applyStatic();
+  for (const id of ["endpoint-model", "endpoint-api-key", "server-env", "server-headers"]) {
+    const input = $(`#${id}`); input.placeholder = GeneralI18n.retranslate(input.placeholder);
+  }
+  for (const id of ["endpoint-provider-help", "composer-status", "setup-error", "toast"]) {
+    const node = $(`#${id}`); node.textContent = GeneralI18n.retranslate(node.textContent);
+  }
+  document.querySelectorAll("[data-language]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.language === language)));
+  renderSessionList(); renderContextUsage(); renderSetup();
+  if (state.settings) { renderEndpointBanner(); renderEndpointList(); renderServerList(); }
+  if (state.current && !state.controller) renderMessages();
+  if (!state.controller) setBusy(false);
+  await Promise.all([loadStatus(), loadKnowledge($("#knowledge-search").value), loadTools()]);
+}
+
 async function deleteCurrentSession() {
-  if (!state.current || !confirm(`「${state.current.title}」の会話とツール履歴を削除しますか？`)) return;
+  if (!state.current || !confirm(t`「${state.current.title}」の会話とツール履歴を削除しますか？`)) return;
   try { await api(`sessions/${state.current.id}`, { method: "DELETE" }); state.current = null; renderContextUsage(); $("#chat-workspace").classList.add("hidden"); $("#welcome").classList.remove("hidden"); await loadSessions(); }
   catch (error) { toast(error.message, true); }
 }
@@ -524,9 +589,9 @@ function renderMessage(item) {
   const article = document.createElement("article"); article.className = `message ${item.role}`;
   if (item.role !== "user") { const avatar = document.createElement("div"); avatar.className = "avatar"; avatar.textContent = item.role === "tool" ? "T" : "U"; article.append(avatar); }
   const bubble = document.createElement("div"); bubble.className = "bubble";
-  if (item.role !== "user") { const meta = document.createElement("div"); meta.className = "message-meta"; meta.textContent = item.role === "tool" ? item.metadata.tool_name || "MCP TOOL" : "LOCAL ASSISTANT"; bubble.append(meta); }
+  if (item.role !== "user") { const meta = document.createElement("div"); meta.className = "message-meta"; meta.textContent = item.role === "tool" ? item.metadata.tool_name || t("MCP TOOL") : t("LOCAL ASSISTANT"); bubble.append(meta); }
   const content = document.createElement("div"); content.className = "message-content";
-  const text = item.content || (item.metadata.tool_calls ? "ツールの実行を準備しました。" : "");
+  const text = item.content || (item.metadata.tool_calls ? t("ツールの実行を準備しました。") : "");
   if (item.role === "assistant" && window.GeneralMarkdown) content.innerHTML = window.GeneralMarkdown.renderMarkdown(text);
   else content.textContent = text;
   content.querySelectorAll?.(".copy-code").forEach((button) => button.addEventListener("click", () => navigator.clipboard.writeText(button.nextElementSibling.textContent)));
@@ -537,7 +602,7 @@ function renderMessage(item) {
   appendVolcanoPlot(bubble, item);
   article.append(bubble);
   // プロット付きは各プロット枠にハンドルを持つので、画像・テキストだけのツール出力枠に付ける。
-  if (item.role === "tool" && !bubble.classList.contains("has-plot")) attachResizeHandle(bubble, { min: 80, label: "ツール出力枠の高さを調整" });
+  if (item.role === "tool" && !bubble.classList.contains("has-plot")) attachResizeHandle(bubble, { min: 80, label: t("ツール出力枠の高さを調整") });
   return article;
 }
 
@@ -556,7 +621,7 @@ function attachResizeHandle(target, options) {
 }
 
 function attachPlotResizeHandle(plot) {
-  attachResizeHandle(plot, { min: 240, max: 1600, label: "プロットの高さを調整", onResize: () => { if (plot.data) Plotly.Plots.resize(plot); } });
+  attachResizeHandle(plot, { min: 240, max: 1600, label: t("プロットの高さを調整"), onResize: () => { if (plot.data) Plotly.Plots.resize(plot); } });
 }
 
 function appendPcaPlot(bubble, item) {
@@ -681,29 +746,29 @@ function appendVolcanoPlot(bubble, item) {
 
 function renderApproval(event) {
   const card = document.createElement("section"); card.className = "approval-card";
-  const title = document.createElement("h3"); title.textContent = "ツール実行の確認";
-  const reason = document.createElement("p"); reason.textContent = event.payload.decision?.reason || "この操作には確認が必要です。";
+  const title = document.createElement("h3"); title.textContent = t("ツール実行の確認");
+  const reason = document.createElement("p"); reason.textContent = event.payload.decision?.reason || t("この操作には確認が必要です。");
   const code = document.createElement("code"); code.textContent = `${event.payload.qualified_name}\n${JSON.stringify(event.payload.arguments, null, 2)}`;
   const actions = document.createElement("div"); actions.className = "form-actions";
-  actions.append(actionButton("拒否", () => resolveApproval(event.id, false), "button quiet"), actionButton("実行を許可", () => resolveApproval(event.id, true), "button primary"));
+  actions.append(actionButton(t("拒否"), () => resolveApproval(event.id, false), "button quiet"), actionButton(t("実行を許可"), () => resolveApproval(event.id, true), "button primary"));
   card.append(title, reason, code, actions); return card;
 }
 
 // 承認後もモデルは何段もツールを呼び続けうるので、送信と同じ SSE で経過を流し、停止も効かせる。
 async function resolveApproval(eventId, approved) {
   if (!state.current) return;
-  setBusy(true, approved ? "承認済みツールを実行中" : "拒否を伝達中");
+  setBusy(true, approved ? t("承認済みツールを実行中") : t("拒否を伝達中"));
   state.controller = new AbortController();
   try {
     const last = await streamTurn(`sessions/${state.current.id}/approvals/${eventId}/stream`, { approved });
     await openSession(state.current.id); await loadSessions();
-    if (last?.type === "approval_required") toast("次のツール呼び出しも確認が必要です。");
+    if (last?.type === "approval_required") toast(t("次のツール呼び出しも確認が必要です。"));
   } catch (error) {
-    if (error.name === "AbortError") toast("応答を停止しました。"); else toast(error.message, true);
+    if (error.name === "AbortError") toast(t("応答を停止しました。")); else toast(error.message, true);
   } finally { state.controller = null; setBusy(false); }
 }
 
-function setBusy(busy, label = "準備完了") {
+function setBusy(busy, label = t("準備完了")) {
   $("#send-chat").disabled = busy;
   $("#cancel-chat").classList.toggle("hidden", !busy);
   $("#composer-status").textContent = label;
@@ -723,8 +788,8 @@ async function streamTurn(path, payload) {
       const line = chunk.split("\n").find((item) => item.startsWith("data: "));
       if (!line) continue;
       const item = JSON.parse(line.slice(6)); last = item;
-      if (item.session_title) applySessionTitle(item.session_title);
-      if (item.type === "status") $("#composer-status").textContent = ({ thinking: "モデルが考えています", executing: "承認済みツールを実行中" })[item.status] || item.status;
+      if (item.session_title && !state.current?.state.title_manually_set) applySessionTitle(item.session_title);
+      if (item.type === "status") $("#composer-status").textContent = ({ thinking: t("モデルが考えています"), executing: t("承認済みツールを実行中") })[item.status] || item.status;
       if (item.type === "delta") {
         streamedContent += item.content || "";
         if (!streaming) {
@@ -737,11 +802,11 @@ async function streamTurn(path, payload) {
         scrollConversationToEnd();
       }
       if (item.type === "tool_started") {
-        $("#composer-status").textContent = `${item.tool} を実行中`;
-        appendMessage({ role: "tool", content: `実行中: ${item.tool}\n${JSON.stringify(item.arguments || {}, null, 2)}`, metadata: { tool_name: item.tool } });
+        $("#composer-status").textContent = t`${item.tool} を実行中`;
+        appendMessage({ role: "tool", content: t`実行中: ${item.tool}\n${JSON.stringify(item.arguments || {}, null, 2)}`, metadata: { tool_name: item.tool } });
       }
-      if (item.type === "tool_result") $("#composer-status").textContent = `${item.tool} が完了`;
-      if (item.type === "approval_required") $("#composer-status").textContent = "ツール実行の確認待ち";
+      if (item.type === "tool_result") $("#composer-status").textContent = t`${item.tool} が完了`;
+      if (item.type === "approval_required") $("#composer-status").textContent = t("ツール実行の確認待ち");
       if (item.context_usage && state.current) {
         state.current.state.context_usage = item.context_usage;
         renderContextUsage();
@@ -761,14 +826,14 @@ async function sendMessage(event) {
   const optimisticMessage = { role: "user", content: message, metadata: {} };
   state.current.messages.push(optimisticMessage);
   appendMessage(optimisticMessage);
-  setBusy(true, "モデルが考えています");
+  setBusy(true, t("モデルが考えています"));
   state.controller = new AbortController();
   try {
     await streamTurn(`sessions/${state.current.id}/chat/stream`, { message, attachment_ids: state.attachments });
     state.attachments = []; renderAttachmentChips();
     await openSession(state.current.id); await loadSessions();
   } catch (error) {
-    if (error.name === "AbortError") toast("応答を停止しました。"); else toast(error.message, true);
+    if (error.name === "AbortError") toast(t("応答を停止しました。")); else toast(error.message, true);
   } finally { state.controller = null; setBusy(false); input.focus(); }
 }
 
@@ -778,13 +843,13 @@ async function loadKnowledge(query = "") {
   const result = await api(query ? `knowledge/search?q=${encodeURIComponent(query)}` : "knowledge");
   state.knowledge = result.sources;
   const list = $("#knowledge-list"); list.textContent = "";
-  if (!state.knowledge.length) { list.innerHTML = '<p class="muted">保存済み資料はありません。</p>'; return; }
+  if (!state.knowledge.length) { list.innerHTML = t('<p class="muted">保存済み資料はありません。</p>'); return; }
   for (const source of state.knowledge) {
     const card = document.createElement("article"); card.className = "connection-card knowledge-card";
     const check = document.createElement("input"); check.type = "checkbox"; check.checked = state.attachments.includes(source.id);
     check.addEventListener("change", () => { if (check.checked) state.attachments.push(source.id); else state.attachments = state.attachments.filter((id) => id !== source.id); renderAttachmentChips(); });
     const info = document.createElement("span"); info.textContent = `${source.name} · ${Math.ceil(source.size / 1024)}KB`;
-    const remove = actionButton("削除", () => deleteKnowledge(source.id), "mini-button danger-text");
+    const remove = actionButton(t("削除"), () => deleteKnowledge(source.id), "mini-button danger-text");
     card.append(check, info, remove); list.append(card);
   }
 }
@@ -801,7 +866,7 @@ function renderAttachmentChips() {
 
 async function uploadKnowledge(event) {
   for (const file of event.target.files) {
-    if (file.size > 5 * 1024 * 1024) { toast(`${file.name} は5MBを超えています。`, true); continue; }
+    if (file.size > 5 * 1024 * 1024) { toast(t`${file.name} は5MBを超えています。`, true); continue; }
     const bytes = new Uint8Array(await file.arrayBuffer());
     let binary = ""; for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
     try { await api("knowledge", { method: "POST", body: JSON.stringify({ name: file.name, mime_type: file.type || "application/octet-stream", content_base64: btoa(binary) }) }); }
@@ -811,7 +876,7 @@ async function uploadKnowledge(event) {
 }
 
 async function deleteKnowledge(id) {
-  if (!confirm("この資料をKnowledgeから削除しますか？")) return;
+  if (!confirm(t("この資料をKnowledgeから削除しますか？"))) return;
   try { await api(`knowledge/${id}`, { method: "DELETE" }); state.attachments = state.attachments.filter((value) => value !== id); await loadKnowledge(); renderAttachmentChips(); }
   catch (error) { toast(error.message, true); }
 }
@@ -835,7 +900,7 @@ function renderCapabilities(list, values, kind) {
           ? await api("resources/read", { method: "POST", body: JSON.stringify({ server: item.server, uri: item.uri }) })
           : kind === "prompt" ? await api("prompts/get", { method: "POST", body: JSON.stringify({ server: item.server, name: item.name, arguments: {} }) }) : item;
         $("#chat-input").value = JSON.stringify(result, null, 2);
-        toast("内容を入力欄へ展開しました。");
+        toast(t("内容を入力欄へ展開しました。"));
       } catch (error) { toast(error.message, true); }
     });
     list.append(card);
@@ -846,7 +911,7 @@ async function importClaude() {
   try {
     const config = JSON.parse($("#claude-config").value);
     const result = await api("mcp-servers/import-claude", { method: "POST", body: JSON.stringify({ config }) });
-    state.settings = result.settings; renderServerList(); toast(`${result.imported.length}件を取り込みました。`);
+    state.settings = result.settings; renderServerList(); toast(t`${result.imported.length}件を取り込みました。`);
   } catch (error) { toast(error.message, true); }
 }
 
@@ -858,6 +923,14 @@ function applyServerPreset() {
 }
 
 function bindEvents() {
+  document.querySelectorAll("[data-language]").forEach((button) => button.addEventListener("click", () => changeLanguage(button.dataset.language).catch((error) => toast(error.message, true))));
+  $("#session-name").addEventListener("blur", () => renameCurrentSession().catch(() => {}));
+  $("#session-name").addEventListener("keydown", (event) => {
+    if (event.isComposing) return;
+    if (event.key === "Enter") { event.preventDefault(); event.target.blur(); }
+    if (event.key === "Escape") { event.target.value = state.current?.title || ""; event.target.blur(); }
+  });
+  $("#export-session").addEventListener("click", exportCurrentSession);
   $("#setup-model").addEventListener("input", (event) => { event.target.dataset.touched = "true"; });
   $("#setup-refresh").addEventListener("click", loadSetup);
   $("#setup-pull-model").addEventListener("click", pullSetupModel);
@@ -868,7 +941,7 @@ function bindEvents() {
   $("#chat-form").addEventListener("submit", sendMessage);
   $("#chat-input").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#chat-form").requestSubmit(); } });
   $("#cancel-chat").addEventListener("click", cancelChat);
-  $("#refresh-status").addEventListener("click", async () => { await loadSettings(); await loadStatus(); toast("接続状態を更新しました。"); });
+  $("#refresh-status").addEventListener("click", async () => { await loadSettings(); await loadStatus(); toast(t("接続状態を更新しました。")); });
   $("#toggle-settings").addEventListener("click", () => $("#settings-panel").classList.toggle("open"));
   $("#close-settings").addEventListener("click", () => $("#settings-panel").classList.remove("open"));
   $("#add-endpoint").addEventListener("click", () => openEndpointForm());
@@ -886,6 +959,9 @@ function bindEvents() {
 }
 
 async function initialize() {
+  GeneralI18n.captureStatic(document.body);
+  GeneralI18n.applyStatic();
+  document.querySelectorAll("[data-language]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.language === GeneralI18n.language())));
   bindEvents();
   try {
     await Promise.all([loadSetup(), loadSettings(), loadSessions(), loadStatus(), loadKnowledge(), loadCapabilities()]);

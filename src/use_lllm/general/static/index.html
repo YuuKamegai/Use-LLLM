@@ -88,8 +88,8 @@
 
       <section id="chat-workspace" class="chat-workspace hidden">
         <div class="conversation-heading">
-          <div><span class="eyebrow">CONVERSATION</span><h1 id="session-title">新しいチャット</h1></div>
-          <button id="delete-session" class="button quiet danger-text">履歴を削除</button>
+          <div class="conversation-name"><input id="session-name" class="eyebrow session-name" aria-label="セッション名" maxlength="500" autocomplete="off"><h1 id="session-title">新しいチャット</h1></div>
+          <div class="conversation-actions"><button id="export-session" class="button quiet">html書き出し</button><button id="delete-session" class="button quiet danger-text">履歴を削除</button></div>
         </div>
         <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
       </section>
@@ -123,6 +123,13 @@
         <button id="close-settings" class="icon-button" aria-label="設定を閉じる">×</button>
       </div>
 
+      <section class="settings-section language-section">
+        <h3>表示言語 / Language</h3>
+        <div id="language-toggle" class="language-toggle" role="group" aria-label="表示言語">
+          <button type="button" data-language="ja" aria-pressed="true">日本語</button>
+          <button type="button" data-language="en" aria-pressed="false">English</button>
+        </div>
+      </section>
       <section class="settings-section">
         <div class="section-title"><h3>AI connections</h3><button id="add-endpoint" class="mini-button">追加</button></div>
         <div id="endpoint-list" class="connection-list"></div>
@@ -192,6 +199,7 @@
   <div id="toast" role="status" aria-live="polite"></div>
   <script src="./vendor/plotly.min.js"></script>
   <script src="./vendor/katex.min.js"></script>
+  <script src="./static/i18n.js"></script>
   <script src="./static/pca-plot.js"></script>
   <script src="./static/eic-plot.js"></script>
   <script src="./static/volcano-plot.js"></script>

@@ -4,6 +4,10 @@
   root.GeneralVolcanoPlot = api;
 }(typeof globalThis !== "undefined" ? globalThis : this, function createVolcanoPlotHelpers() {
   "use strict";
+  const t = (...args) => {
+    if (globalThis.GeneralI18n) return globalThis.GeneralI18n.t(...args);
+    return typeof args[0] === "string" ? args[0] : args[0].reduce((text, part, index) => text + part + (args[index + 1] ?? ""), "");
+  };
 
   const SCHEMA = "lipidmix.volcano.v1";
 
@@ -154,13 +158,13 @@
     const nsTotal = Number(selection?.ns_total);
     const nsPlotted = Number(selection?.ns_plotted);
     if (Number.isFinite(nsTotal) && Number.isFinite(nsPlotted) && nsPlotted < nsTotal) {
-      parts.push(`ns を ${nsTotal}→${nsPlotted} に間引き`);
+      parts.push(t`ns を ${nsTotal}→${nsPlotted} に間引き`);
     }
     const significant = Number(selection?.significant_total);
-    if (Number.isFinite(significant)) parts.push(`有意 ${significant} 件`);
+    if (Number.isFinite(significant)) parts.push(t`有意 ${significant} 件`);
     const dropped = Number(selection?.dropped_nonfinite);
     if (Number.isFinite(dropped) && dropped > 0) {
-      parts.push(`検定不能 ${dropped} 件を除外`);
+      parts.push(t`検定不能 ${dropped} 件を除外`);
     }
     parts.push("hover / zoom / legend filter");
     return parts.join(" · ");

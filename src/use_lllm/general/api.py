@@ -49,6 +49,7 @@ from use_lllm.general.security import (
     CSRF_PLACEHOLDER,
     LocalAPISecurityMiddleware,
 )
+from use_lllm.general.session_export import export_session_html
 
 STATIC_ROOT = Path(__file__).with_name("static")
 VENDOR_ROOT = STATIC_ROOT.parent.parent / "static" / "vendor"
@@ -68,6 +69,8 @@ def _static_ui_ready() -> bool:
     required_files = (
         STATIC_ROOT / "index.html",
         STATIC_ROOT / "app.js",
+        STATIC_ROOT / "i18n.js",
+        STATIC_ROOT / "session-export.js",
         STATIC_ROOT / "styles.css",
         STATIC_ROOT / "pca-plot.js",
         STATIC_ROOT / "eic-plot.js",
@@ -111,6 +114,10 @@ class MCPServerBody(StrictModel):
 
 class SessionBody(StrictModel):
     title: str = DEFAULT_GENERAL_SESSION_TITLE
+
+
+class SessionRenameBody(StrictModel):
+    title: str = Field(min_length=1, max_length=500)
 
 
 class ChatBody(StrictModel):
@@ -788,6 +795,35 @@ def create_general_app(
     async def get_session(session_id: str) -> dict[str, Any]:
         try:
             return general_session(session_id)
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.patch("/api/sessions/{session_id}")
+    async def rename_session(session_id: str, body: SessionRenameBody) -> dict[str, Any]:
+        try:
+            general_session(session_id)
+            title = body.title.strip()
+            if not title:
+                raise HTTPException(status_code=422, detail="セッション名を入力してください。")
+            return sessions.update_session(
+                session_id, title=title, state_patch={"title_manually_set": True}
+            )
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.get("/api/sessions/{session_id}/export")
+    async def export_session(
+        session_id: str, language: str = Query(default="ja", pattern="^(ja|en)$")
+    ) -> HTMLResponse:
+        try:
+            session = general_session(session_id)
+            document = await asyncio.to_thread(
+                export_session_html, session, sessions, STATIC_ROOT, VENDOR_ROOT, language
+            )
+            return HTMLResponse(document, headers={
+                "Content-Disposition": f'attachment; filename="session-{session_id}.html"',
+                "Cache-Control": "no-store",
+            })
         except Exception as exc:
             _raise_http(exc)
 
