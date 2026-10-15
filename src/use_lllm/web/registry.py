@@ -89,7 +89,10 @@ class WebRegistry:
         return matches[0]
 
     def builtin_name(self, name):
-        tool = self.get_tool(name)
+        try:
+            tool = self.get_tool(name)
+        except MCPConnectionError:
+            return None
         return tool.qualified_name if any(tool is item for item in self._builtin) else None
 
     def server_instructions(self):

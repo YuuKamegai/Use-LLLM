@@ -5,7 +5,7 @@
 ## 自動検証
 
 - 既存baseline: 191 passed, 14 subtests。
-- 実装後: `uv run --frozen python -m pytest -q`: 260 passed, 14 subtests。
+- 実装後・独立レビュー指摘修正後: `uv run --frozen python -m pytest -q`: 262 passed, 14 subtests。
 - 既存のStarlette TestClient非推奨警告1件あり。baselineから存在し、本変更の失敗ではない。
 - `ruff check .`、`uv lock --check`、`node --check`（app.js/i18n.js）、`git diff --check`: 成功。
 - 取得IP固定・TLSホスト維持、非公開IP/DNS混在拒否、容量・展開後容量・期限、robots/redirect、
@@ -64,3 +64,24 @@
 
 生成した画面画像と公開情報だけの実評価ログはworktreeのignored `artifacts/`に保存。
 認証キーや元の会話本文は検証記録へ含めていない。
+
+## 独立レビューと修正
+
+別コンテキストのレビュアーが全変更を確認。Criticalなし、Important 2件、Minorなし。
+指摘2件をそれぞれ失敗するテストで再現し、1回の修正パスで修正した。
+
+- 未登録の状態復旧候補でWebRegistryが例外を投げた問題:
+  `test_unknown_recovery_candidates_are_false_not_exceptions` RED→GREEN。
+  従来レジストリの「未知名は安全性False」という契約を維持した。
+- Web全体オフ後、残ったチャット別disabled_toolsにより他MCPの切替が400になった問題:
+  `test_dormant_web_preferences_do_not_block_remaining_tools` RED→GREEN。
+  非表示の内蔵ツールの無効化設定を保持し、実行権限は与えない。
+
+レビュアーが判断対象外にした項目への扱い:
+
+- 実モデルの自発的検索・引用の品質は上記の実評価と制約を採用する。網羅的な正確性は保証しない。
+- 実際の外部MCPやユーザーデータを使う追加実行は行わず、合成MCPの接続・承認・復旧契約で検証する。
+- ネット取得の期限と容量は制限するが、あらゆる病的HTMLの同期抽出CPU時間、
+  OSで停止したDNS処理の長期リソース挙動までは実証していない。この環境限界は残る。
+
+未修正のMinor指摘: なし。元の作業場所への統合・稼働アプリの再起動・pushは未実施。

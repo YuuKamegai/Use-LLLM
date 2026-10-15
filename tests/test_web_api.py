@@ -122,3 +122,34 @@ def test_web_toggle_preserves_connected_mcp(tmp_path):
         assert "fixture::peek" in client.get("/api/tools").json()["tools"]
         assert client.put("/api/web-search", json={"enabled": False}).status_code == 200
         assert app.state.runtime.registry is delegate
+
+
+def test_dormant_web_preferences_do_not_block_remaining_tools(app_client):
+    app, client = app_client
+    from contextlib import asynccontextmanager
+
+    from tests.test_mcp_registry import FakeSession, FakeTool
+    from use_lllm.core.mcp_registry import MCPRegistry
+
+    @asynccontextmanager
+    async def factory(spec):
+        yield FakeSession(
+            [FakeTool("peek", {"type": "object"}, annotations={"readOnlyHint": True})]
+        )
+
+    app.state.runtime.registry_factory = lambda specs: MCPRegistry(specs, session_factory=factory)
+    client.post("/api/mcp-servers", json={"name": "fixture", "command": "python"})
+    client.post("/api/mcp-servers/fixture/connect")
+    client.put("/api/web-search", json={"enabled": True})
+    sid = client.post("/api/sessions", json={"title": "preferences"}).json()["id"]
+    route = f"/api/sessions/{sid}/tools"
+    assert client.put(route, json={"disabled_tools": ["web::search"]}).status_code == 200
+    client.put("/api/web-search", json={"enabled": False})
+    assert (
+        client.put(route, json={"disabled_tools": ["web::search", "fixture::peek"]}).status_code
+        == 200
+    )
+    client.put("/api/web-search", json={"enabled": True})
+    session = client.get(f"/api/sessions/{sid}").json()
+    assert session["state"]["disabled_tools"] == ["fixture::peek", "web::search"]
+    assert client.put(route, json={"disabled_tools": ["unknown::tool"]}).status_code == 400

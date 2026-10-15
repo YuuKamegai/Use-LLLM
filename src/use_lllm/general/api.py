@@ -962,6 +962,9 @@ def create_general_app(
         try:
             general_session(session_id)
             known = set(runtime.registry.tool_names())
+            # Preserve dormant built-in preferences when global Web search is off.
+            # This accepts preferences only; it does not expose or execute these tools.
+            known.update({"web::search", "web::read_page"})
             invalid = sorted(set(body.disabled_tools) - known)
             if invalid:
                 raise ValueError("未登録のMCPツールです: " + ", ".join(invalid))

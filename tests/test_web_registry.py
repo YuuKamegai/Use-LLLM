@@ -90,3 +90,9 @@ def test_external_annotations_do_not_gain_auto_approval():
         await registry.close_all()
 
     asyncio.run(check())
+
+
+def test_unknown_recovery_candidates_are_false_not_exceptions():
+    registry = WebRegistry(MCPRegistry([]), search=Service(), pages=Service(), enabled=True)
+    assert registry.is_replay_safe("srv::not_registered") is False
+    assert registry.may_write_files("srv::not_registered") is False
