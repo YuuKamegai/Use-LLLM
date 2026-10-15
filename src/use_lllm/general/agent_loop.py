@@ -134,6 +134,9 @@ class GeneralAgentLoop:
             self.sessions.update_session(session_id, title=new_title)
 
         self.sessions.add_message(session_id, "user", text, metadata)
+        from use_lllm.web.budget import reset_web_budget
+
+        reset_web_budget(self.sessions, session_id)
         self.sessions.update_session(session_id, status="running")
         return new_title
 
@@ -151,6 +154,10 @@ class GeneralAgentLoop:
             else "\n現在接続中のMCPツールはありません。"
         )
         system = SYSTEM_PROMPT + catalog + self._server_instructions_block(tool_names)
+        if callable(getattr(self.registry, "builtin_name", None)):
+            from use_lllm.web.instructions import web_instructions
+
+            system += web_instructions(tool_names)
         return await self.memory.assemble(session_id, system, tools)
 
     def _server_instructions_block(self, tool_names: list[str]) -> str:
@@ -273,6 +280,21 @@ class GeneralAgentLoop:
         approved: bool,
         network_mode: str,
     ) -> MCPToolResult:
+        builtin = getattr(self.registry, "builtin_name", None)
+        if callable(builtin):
+            name = builtin(qualified_name)
+            if name:
+                from use_lllm.web.budget import consume_web_budget
+                from use_lllm.web.contracts import failure, to_mcp_result
+
+                disabled = self._general_session(session_id)["state"].get("disabled_tools", [])
+                if name in disabled:
+                    return to_mcp_result(
+                        name, failure("blocked_url", "このセッションで無効なWebツールです。")
+                    )
+                exhausted = consume_web_budget(self.sessions, session_id, name)
+                if exhausted:
+                    return to_mcp_result(name, exhausted)
         return await self.registry.call_tool(
             qualified_name,
             arguments,
@@ -359,6 +381,9 @@ class GeneralAgentLoop:
         replay_of_id: int | None = None,
         add_message: bool = True,
     ) -> MCPToolResult:
+        builtin = getattr(self.registry, "builtin_name", None)
+        if callable(builtin):
+            qualified_name = builtin(qualified_name) or qualified_name
         server_name = self._server_name(qualified_name)
         generation = await self._ensure_registry_session(session_id, server_name)
         invocation_id = self.sessions.start_tool_invocation(
