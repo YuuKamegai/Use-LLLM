@@ -281,6 +281,7 @@ class GeneralAgentLoop:
         network_mode: str,
     ) -> MCPToolResult:
         builtin = getattr(self.registry, "builtin_name", None)
+        name = None
         if callable(builtin):
             name = builtin(qualified_name)
             if name:
@@ -295,13 +296,18 @@ class GeneralAgentLoop:
                 exhausted = consume_web_budget(self.sessions, session_id, name)
                 if exhausted:
                     return to_mcp_result(name, exhausted)
-        return await self.registry.call_tool(
+        result = await self.registry.call_tool(
             qualified_name,
             arguments,
             approved=approved,
             network_mode=network_mode,
             session_id=session_id,
         )
+        if name:
+            from use_lllm.web.budget import record_web_result
+
+            record_web_result(self.sessions, session_id, result)
+        return result
 
     def _capture_png_artifacts(
         self,
@@ -762,6 +768,9 @@ class GeneralAgentLoop:
         tools = catalog.tools
         for step in range(1, self.max_steps + 1):
             content_parts: list[str] = []
+            from use_lllm.web.budget import all_web_failed, finalize_web_answer
+
+            hold_web_answer = all_web_failed(self.sessions, session_id)
             tool_calls: list[dict[str, Any]] = []
             seen_calls: set[str] = set()
             model = "unknown"
@@ -784,7 +793,8 @@ class GeneralAgentLoop:
                 delta = str(chunk_message.get("content") or "")
                 if delta:
                     content_parts.append(delta)
-                    yield {"type": "delta", "content": delta, "step": step}
+                    if not hold_web_answer:
+                        yield {"type": "delta", "content": delta, "step": step}
                 calls = chunk_message.get("tool_calls") or []
                 if isinstance(calls, list):
                     for call in calls:
@@ -802,6 +812,9 @@ class GeneralAgentLoop:
             if eval_count is not None:
                 response_metadata["eval_count"] = eval_count
             if not tool_calls:
+                content = finalize_web_answer(self.sessions, session_id, content)
+                if hold_web_answer:
+                    yield {"type": "delta", "content": content, "step": step}
                 self.sessions.add_message(
                     session_id,
                     "assistant",
@@ -976,6 +989,9 @@ class GeneralAgentLoop:
                 response_metadata["eval_count"] = response.eval_count
             if not calls:
                 content = response.content.strip()
+                from use_lllm.web.budget import finalize_web_answer
+
+                content = finalize_web_answer(self.sessions, session_id, content)
                 self.sessions.add_message(
                     session_id,
                     "assistant",

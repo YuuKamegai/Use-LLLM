@@ -178,6 +178,29 @@ function selectedEndpoint() {
   return state.settings?.endpoints.find((item) => item.name === state.settings.selected_endpoint);
 }
 
+function renderWebSearchSettings() {
+  const enabled = Boolean(state.settings?.web_search_enabled);
+  $("#web-search-enabled").checked = enabled;
+  $("#web-search-status").textContent = enabled ? t("オン") : t("オフ");
+}
+
+async function saveWebSearchSettings() {
+  const control = $("#web-search-enabled");
+  const errorNode = $("#web-search-error");
+  control.disabled = true;
+  errorNode.textContent = "";
+  try {
+    state.settings = await api("web-search", { method: "PUT", body: JSON.stringify({ enabled: control.checked }) });
+    renderServerList();
+    await loadTools();
+  } catch (error) {
+    errorNode.textContent = error.message;
+  } finally {
+    renderWebSearchSettings();
+    control.disabled = false;
+  }
+}
+
 function renderEndpointBanner() {
   const endpoint = selectedEndpoint();
   const banner = $("#endpoint-banner");
@@ -321,6 +344,7 @@ function serverStatus(name) {
 }
 
 function renderServerList() {
+  renderWebSearchSettings();
   const list = $("#server-list");
   list.textContent = "";
   if (!state.settings.mcp_servers.length) list.innerHTML = t('<p class="muted">MCPサーバーは未登録です。</p>');
@@ -804,10 +828,10 @@ async function streamTurn(path, payload) {
         scrollConversationToEnd();
       }
       if (item.type === "tool_started") {
-        $("#composer-status").textContent = t`${item.tool} を実行中`;
+        $("#composer-status").textContent = item.tool === "web::search" ? t("Web検索中") : item.tool === "web::read_page" ? t("ページを確認中") : t`${item.tool} を実行中`;
         appendMessage({ role: "tool", content: t`実行中: ${item.tool}\n${JSON.stringify(item.arguments || {}, null, 2)}`, metadata: { tool_name: item.tool } });
       }
-      if (item.type === "tool_result") $("#composer-status").textContent = t`${item.tool} が完了`;
+      if (item.type === "tool_result") $("#composer-status").textContent = item.is_error ? t("ツール実行でエラーが発生しました") : t`${item.tool} が完了`;
       if (item.type === "approval_required") $("#composer-status").textContent = t("ツール実行の確認待ち");
       if (item.context_usage && state.current) {
         state.current.state.context_usage = item.context_usage;
@@ -950,6 +974,7 @@ function bindEvents() {
   $("#endpoint-form").addEventListener("submit", saveEndpoint);
   $("#endpoint-provider").addEventListener("change", updateEndpointProviderFields);
   $("#add-server").addEventListener("click", () => openServerForm());
+  $("#web-search-enabled").addEventListener("change", saveWebSearchSettings);
   $("#server-form").addEventListener("submit", saveServer);
   $("#server-preset").addEventListener("change", applyServerPreset);
   $("#knowledge-file").addEventListener("change", uploadKnowledge);

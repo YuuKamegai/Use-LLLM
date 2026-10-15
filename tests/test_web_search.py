@@ -112,3 +112,22 @@ def test_timeout_does_not_release_running_worker_slot():
             service.close()
 
     asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "kind,code", [("RatelimitException", "rate_limited"), ("TimeoutException", "timeout")]
+)
+def test_known_backend_failures_keep_their_meaning(kind, code):
+    from ddgs import exceptions
+
+    def broken(*args, **kwargs):
+        raise getattr(exceptions, kind)("remote error")
+
+    async def check():
+        service = SearchService(search_fn=broken)
+        try:
+            assert (await service.search("q")).payload["error"]["code"] == code
+        finally:
+            service.close()
+
+    asyncio.run(check())

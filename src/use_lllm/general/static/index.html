@@ -131,6 +131,16 @@
         </div>
       </section>
       <section class="settings-section">
+        <div id="web-search-section" class="web-search-section">
+          <div class="section-title"><h3>Web検索</h3><span id="web-search-status" class="count-badge"></span></div>
+          <label class="check-row"><input id="web-search-enabled" type="checkbox">Web検索と公開ページ取得を有効化</label>
+          <p class="muted">APIキー不要 / DuckDuckGo</p>
+          <p class="muted">有効時はAIが必要に応じて検索し、検索・ページ取得を個別確認なしで実行します。検索語は検索先へ、取得URLはページの提供元へ送信されます。</p>
+          <p class="muted">MCPサーバーの外部通信許可とは独立した設定です。</p>
+          <p id="web-search-error" class="danger-text" role="status"></p>
+        </div>
+      </section>
+      <section class="settings-section">
         <div class="section-title"><h3>AI connections</h3><button id="add-endpoint" class="mini-button">追加</button></div>
         <div id="endpoint-list" class="connection-list"></div>
         <form id="endpoint-form" class="settings-form hidden">

@@ -75,6 +75,7 @@ def test_collision_rejected_and_connection_mutations_preserve_setting(app_client
     assert client.put("/api/endpoints/other", json=endpoint).status_code == 200
     assert client.delete("/api/endpoints/other").status_code == 200
     assert app.state.runtime.web_search is service
+
     assert client.get("/api/settings").json()["web_search_enabled"]
     assert (
         client.post("/api/mcp-servers", json={"name": "srv", "command": "python"}).status_code
@@ -93,3 +94,31 @@ def test_collision_rejected_and_connection_mutations_preserve_setting(app_client
     assert client.put("/api/web-search", json={"enabled": False}).status_code == 200
     assert client.get("/api/tools").json()["tools"] == []
     assert app.state.runtime.web_search is service
+
+
+def test_web_toggle_preserves_connected_mcp(tmp_path):
+    from contextlib import asynccontextmanager
+
+    from tests.test_mcp_registry import FakeSession, FakeTool
+    from use_lllm.core.mcp_registry import MCPRegistry
+
+    @asynccontextmanager
+    async def factory(spec):
+        yield FakeSession(
+            [FakeTool("peek", {"type": "object"}, annotations={"readOnlyHint": True})]
+        )
+
+    app = create_general_app(
+        session_store=SessionStore(tmp_path),
+        ollama_factory=lambda c: FakeOllama(),
+        registry_factory=lambda specs: MCPRegistry(specs, session_factory=factory),
+    )
+    with secure_client(app) as client:
+        client.post("/api/mcp-servers", json={"name": "fixture", "command": "python"})
+        assert client.post("/api/mcp-servers/fixture/connect").status_code == 200
+        delegate = app.state.runtime.registry
+        assert client.put("/api/web-search", json={"enabled": True}).status_code == 200
+        assert app.state.runtime.registry.delegate is delegate
+        assert "fixture::peek" in client.get("/api/tools").json()["tools"]
+        assert client.put("/api/web-search", json={"enabled": False}).status_code == 200
+        assert app.state.runtime.registry is delegate

@@ -241,7 +241,18 @@ class GeneralRuntime:
         else:
             model_client = self.ollama_factory(selected.to_ollama_config())
         registry = self.registry_factory(settings.mcp_servers)
-        if settings.web_search_enabled:
+        registry = self._with_web_tools(registry, settings.web_search_enabled)
+        if persist:
+            save_settings(self.settings_path, settings)
+        self.settings = settings
+        self.endpoints = endpoints
+        self.ollama = model_client
+        self.registry = registry
+        self.agent = GeneralAgentLoop(model_client, self.sessions, registry)
+        self.autostart_attempted = False
+
+    def _with_web_tools(self, registry, enabled: bool):
+        if enabled:
             from use_lllm.web.pages import PageReader
             from use_lllm.web.registry import WebRegistry
             from use_lllm.web.search import SearchService
@@ -252,14 +263,21 @@ class GeneralRuntime:
             registry = WebRegistry(
                 registry, search=self.web_search, pages=self.web_pages, enabled=True
             )
-        if persist:
-            save_settings(self.settings_path, settings)
+        return registry
+
+    def set_web_search(self, enabled: bool) -> None:
+        from use_lllm.web.registry import WebRegistry
+
+        settings = replace(self.settings, web_search_enabled=enabled)
+        self._validate(settings)
+        delegate = (
+            self.registry.delegate if isinstance(self.registry, WebRegistry) else self.registry
+        )
+        registry = self._with_web_tools(delegate, enabled)
+        save_settings(self.settings_path, settings)
         self.settings = settings
-        self.endpoints = endpoints
-        self.ollama = model_client
         self.registry = registry
-        self.agent = GeneralAgentLoop(model_client, self.sessions, registry)
-        self.autostart_attempted = False
+        self.agent = GeneralAgentLoop(self.ollama, self.sessions, registry)
 
     async def apply(self, settings: Settings) -> None:
         old_registry = self.registry
@@ -582,7 +600,7 @@ def create_general_app(
                 status_code=409, detail="応答生成の完了後にWeb検索設定を変更してください。"
             )
         try:
-            await runtime.apply(replace(runtime.settings, web_search_enabled=body.enabled))
+            runtime.set_web_search(body.enabled)
             return runtime.public_settings()
         except Exception as exc:
             _raise_http(exc)

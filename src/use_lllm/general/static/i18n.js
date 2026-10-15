@@ -4,6 +4,16 @@
   else root.GeneralI18n = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   const english = {
+    "Web検索": "Web search",
+    "Web検索と公開ページ取得を有効化": "Enable Web search and public page reading",
+    "APIキー不要 / DuckDuckGo": "No API key required / DuckDuckGo",
+    "有効時はAIが必要に応じて検索し、検索・ページ取得を個別確認なしで実行します。検索語は検索先へ、取得URLはページの提供元へ送信されます。": "When enabled, the AI searches and reads public pages as needed without individual approval. Search queries go to the search service; page URLs go to their publishers.",
+    "MCPサーバーの外部通信許可とは独立した設定です。": "This setting is independent of MCP server network permissions.",
+    "オン": "On",
+    "オフ": "Off",
+    "Web検索中": "Searching the Web",
+    "ページを確認中": "Reading a page",
+    "ツール実行でエラーが発生しました": "A tool returned an error",
     " 古い会話は直前の応答で要約されました。": " Older messages were summarized before the last response.",
     "5MB以下のテキスト資料をローカル保存し、選択した資料だけを会話へ添付します。": "Store text documents up to 5 MB locally. Only selected documents are attached to the conversation.",
     '<p class="muted">MCPサーバーは未登録です。</p>': '<p class="muted">No MCP servers registered.</p>',

@@ -108,3 +108,18 @@ def test_new_origin_rechecks_robots():
         "https://example.com/robots.txt",
         "https://example.com/",
     ]
+
+
+@pytest.mark.parametrize("status,expected", [(404, "ok"), (503, "error")])
+def test_robots_missing_and_unavailable(status, expected):
+    class HTTP(FakeHTTP):
+        async def get(self, url, *, deadline):
+            if url.endswith("/robots.txt"):
+                self.calls.append(url)
+                return FetchedResponse(url, status, {}, b"")
+            return await super().get(url, deadline=deadline)
+
+    http = HTTP({"https://example.org/": (200, {"content-type": "text/plain"}, b"Evidence")})
+    result = read(http)
+    assert result.payload["status"] == expected
+    assert len(http.calls) == (2 if status == 404 else 1)

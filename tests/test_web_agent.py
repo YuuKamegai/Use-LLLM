@@ -167,4 +167,35 @@ def test_instructions_follow_availability_and_failed_search(tmp_path):
     )
     asyncio.run(GeneralAgentLoop(model, store, registry).chat(sid, "確認して"))
     assert "search_failed" in str(model.calls[-1]["messages"])
-    assert store.list_messages(sid)[-1]["content"] == "確認できなかった"
+    assert "確認できなかった" in store.list_messages(sid)[-1]["content"]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_all_web_failures_cannot_be_presented_as_verified(tmp_path, stream):
+    from use_lllm.web.contracts import failure
+
+    class Failed(Service):
+        async def search(self, **kwargs):
+            return failure("search_failed", "network failed")
+
+    store = SessionStore(tmp_path)
+    sid = store.create_session("guard", surface="general")["id"]
+    registry = WebRegistry(MCPRegistry([]), search=Failed(), pages=Service(), enabled=True)
+    model = StreamingModel(
+        [
+            response(tool="web::search", arguments={"query": "latest"}),
+            response("最新はPython 1.0です。"),
+        ]
+    )
+
+    async def check():
+        agent = GeneralAgentLoop(model, store, registry)
+        if stream:
+            events = [e async for e in agent.chat_stream(sid, "最新を検索して")]
+            assert not any("Python 1.0" in e.get("content", "") for e in events)
+        else:
+            await agent.chat(sid, "最新を検索して")
+        answer = store.list_messages(sid)[-1]["content"]
+        assert "確認できなかった" in answer and "Python 1.0" not in answer
+
+    asyncio.run(check())

@@ -118,8 +118,15 @@ class SearchService:
             code = exc.code if isinstance(exc, WebError) else "timeout"
             return failure(code, str(exc) or "検索が時間上限に達しました。", **fields)
         except Exception as exc:
+            from ddgs.exceptions import RatelimitException, TimeoutException
+
+            code = (
+                "rate_limited"
+                if isinstance(exc, RatelimitException)
+                else "timeout"
+                if isinstance(exc, TimeoutException)
+                else "search_failed"
+            )
             # DDGS uses exceptions for both remote failures and ambiguous empty responses.
             # Do not turn these into evidence that the requested information does not exist.
-            return failure(
-                "search_failed", f"検索を確認できませんでした（{type(exc).__name__}）。", **fields
-            )
+            return failure(code, f"検索を確認できませんでした（{type(exc).__name__}）。", **fields)
