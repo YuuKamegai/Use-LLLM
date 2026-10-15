@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from use_lllm.core.azure_openai import (
     AzureOpenAIClient,
@@ -117,6 +117,14 @@ class SessionBody(StrictModel):
     title: str = DEFAULT_GENERAL_SESSION_TITLE
 
 
+class WebSearchBody(StrictModel):
+    enabled: StrictBool
+
+
+class WebNameCollision(ValueError):
+    pass
+
+
 class SessionRenameBody(StrictModel):
     title: str = Field(min_length=1, max_length=500)
 
@@ -190,6 +198,8 @@ class GeneralRuntime:
         # agent ではなく runtime が持つ。DB の status でなくメモリに置くのは、
         # プロセスが落ちたときに「実行中」が残ってセッションが使えなくなるのを防ぐため。
         self._active_turns: set[str] = set()
+        self.web_search = None
+        self.web_pages = None
         self.settings = load_settings(settings_path)
         self._install(self.settings, persist=False)
 
@@ -215,6 +225,8 @@ class GeneralRuntime:
     def _validate(settings: Settings) -> EndpointRegistry:
         endpoints = EndpointRegistry(list(settings.endpoints), settings.selected_endpoint)
         names = [spec.name for spec in settings.mcp_servers]
+        if settings.web_search_enabled and "web" in names:
+            raise WebNameCollision("MCPサーバー名webは内蔵Web検索と重複しています。")
         if len(names) != len(set(names)):
             raise ConfigurationError("MCPサーバー名が重複しています。")
         for spec in settings.mcp_servers:
@@ -229,6 +241,17 @@ class GeneralRuntime:
         else:
             model_client = self.ollama_factory(selected.to_ollama_config())
         registry = self.registry_factory(settings.mcp_servers)
+        if settings.web_search_enabled:
+            from use_lllm.web.pages import PageReader
+            from use_lllm.web.registry import WebRegistry
+            from use_lllm.web.search import SearchService
+
+            if self.web_search is None:
+                self.web_search = SearchService()
+                self.web_pages = PageReader()
+            registry = WebRegistry(
+                registry, search=self.web_search, pages=self.web_pages, enabled=True
+            )
         if persist:
             save_settings(self.settings_path, settings)
         self.settings = settings
@@ -259,7 +282,14 @@ class GeneralRuntime:
             replace(item, default_model=name) if item.name == selected else item
             for item in self.settings.endpoints
         )
-        await self.apply(Settings(endpoints, selected, self.settings.mcp_servers))
+        await self.apply(
+            replace(
+                self.settings,
+                endpoints=endpoints,
+                selected_endpoint=selected,
+                mcp_servers=self.settings.mcp_servers,
+            )
+        )
 
     async def test_endpoint(self, name: str) -> dict[str, Any]:
         endpoint = self.endpoints.get(name)
@@ -273,6 +303,7 @@ class GeneralRuntime:
 
     def public_settings(self) -> dict[str, Any]:
         return {
+            "web_search_enabled": self.settings.web_search_enabled,
             "endpoints": [
                 {
                     "name": item.name,
@@ -364,6 +395,8 @@ def _server(body: MCPServerBody, existing: MCPServerSpec | None = None) -> MCPSe
 
 
 def _raise_http(exc: Exception) -> None:
+    if isinstance(exc, WebNameCollision):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(exc, SessionBusy):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(exc, (SessionNotFound, KeyError, FileNotFoundError)):
@@ -399,6 +432,8 @@ def create_general_app(
         try:
             yield
         finally:
+            if runtime.web_search is not None:
+                runtime.web_search.close()
             close_all = getattr(runtime.registry, "close_all", None)
             if close_all is not None:
                 await close_all()
@@ -540,15 +575,28 @@ def create_general_app(
     async def get_settings() -> dict[str, Any]:
         return runtime.public_settings()
 
+    @app.put("/api/web-search")
+    async def set_web_search(body: WebSearchBody) -> dict[str, Any]:
+        if runtime._active_turns:
+            raise HTTPException(
+                status_code=409, detail="応答生成の完了後にWeb検索設定を変更してください。"
+            )
+        try:
+            await runtime.apply(replace(runtime.settings, web_search_enabled=body.enabled))
+            return runtime.public_settings()
+        except Exception as exc:
+            _raise_http(exc)
+
     @app.post("/api/endpoints", status_code=201)
     async def add_endpoint(body: EndpointBody) -> dict[str, Any]:
         try:
             if body.name in {item.name for item in runtime.settings.endpoints}:
                 raise ValueError(f"エンドポイント名が重複しています: {body.name}")
-            settings = Settings(
-                runtime.settings.endpoints + (_endpoint(body),),
-                runtime.settings.selected_endpoint,
-                runtime.settings.mcp_servers,
+            settings = replace(
+                runtime.settings,
+                endpoints=runtime.settings.endpoints + (_endpoint(body),),
+                selected_endpoint=runtime.settings.selected_endpoint,
+                mcp_servers=runtime.settings.mcp_servers,
             )
             await runtime.apply(settings)
             return runtime.public_settings()
@@ -572,7 +620,14 @@ def create_general_app(
                 if runtime.settings.selected_endpoint == name
                 else runtime.settings.selected_endpoint
             )
-            await runtime.apply(Settings(updated, selected, runtime.settings.mcp_servers))
+            await runtime.apply(
+                replace(
+                    runtime.settings,
+                    endpoints=updated,
+                    selected_endpoint=selected,
+                    mcp_servers=runtime.settings.mcp_servers,
+                )
+            )
             return runtime.public_settings()
         except Exception as exc:
             _raise_http(exc)
@@ -588,7 +643,14 @@ def create_general_app(
             selected = runtime.settings.selected_endpoint
             if selected == name:
                 selected = remaining[0].name
-            await runtime.apply(Settings(remaining, selected, runtime.settings.mcp_servers))
+            await runtime.apply(
+                replace(
+                    runtime.settings,
+                    endpoints=remaining,
+                    selected_endpoint=selected,
+                    mcp_servers=runtime.settings.mcp_servers,
+                )
+            )
             return runtime.public_settings()
         except Exception as exc:
             _raise_http(exc)
@@ -598,7 +660,12 @@ def create_general_app(
         try:
             runtime.endpoints.get(name)
             await runtime.apply(
-                Settings(runtime.settings.endpoints, name, runtime.settings.mcp_servers)
+                replace(
+                    runtime.settings,
+                    endpoints=runtime.settings.endpoints,
+                    selected_endpoint=name,
+                    mcp_servers=runtime.settings.mcp_servers,
+                )
             )
             return runtime.public_settings()
         except Exception as exc:
@@ -617,10 +684,11 @@ def create_general_app(
             if body.name in {item.name for item in runtime.settings.mcp_servers}:
                 raise ValueError(f"MCPサーバー名が重複しています: {body.name}")
             await runtime.apply(
-                Settings(
-                    runtime.settings.endpoints,
-                    runtime.settings.selected_endpoint,
-                    runtime.settings.mcp_servers + (_server(body),),
+                replace(
+                    runtime.settings,
+                    endpoints=runtime.settings.endpoints,
+                    selected_endpoint=runtime.settings.selected_endpoint,
+                    mcp_servers=runtime.settings.mcp_servers + (_server(body),),
                 )
             )
             return runtime.public_settings()
@@ -645,10 +713,11 @@ def create_general_app(
                 for item in runtime.settings.mcp_servers
             )
             await runtime.apply(
-                Settings(
-                    runtime.settings.endpoints,
-                    runtime.settings.selected_endpoint,
-                    updated,
+                replace(
+                    runtime.settings,
+                    endpoints=runtime.settings.endpoints,
+                    selected_endpoint=runtime.settings.selected_endpoint,
+                    mcp_servers=updated,
                 )
             )
             return runtime.public_settings()
@@ -662,10 +731,11 @@ def create_general_app(
             if len(updated) == len(runtime.settings.mcp_servers):
                 raise KeyError(name)
             await runtime.apply(
-                Settings(
-                    runtime.settings.endpoints,
-                    runtime.settings.selected_endpoint,
-                    updated,
+                replace(
+                    runtime.settings,
+                    endpoints=runtime.settings.endpoints,
+                    selected_endpoint=runtime.settings.selected_endpoint,
+                    mcp_servers=updated,
                 )
             )
             return runtime.public_settings()
@@ -723,10 +793,11 @@ def create_general_app(
                     )
                 )
             await runtime.apply(
-                Settings(
-                    runtime.settings.endpoints,
-                    runtime.settings.selected_endpoint,
-                    runtime.settings.mcp_servers + tuple(additions),
+                replace(
+                    runtime.settings,
+                    endpoints=runtime.settings.endpoints,
+                    selected_endpoint=runtime.settings.selected_endpoint,
+                    mcp_servers=runtime.settings.mcp_servers + tuple(additions),
                 )
             )
             return {
@@ -823,10 +894,13 @@ def create_general_app(
             document = await asyncio.to_thread(
                 export_session_html, session, sessions, STATIC_ROOT, VENDOR_ROOT, language
             )
-            return HTMLResponse(document, headers={
-                "Content-Disposition": f'attachment; filename="session-{session_id}.html"',
-                "Cache-Control": "no-store",
-            })
+            return HTMLResponse(
+                document,
+                headers={
+                    "Content-Disposition": f'attachment; filename="session-{session_id}.html"',
+                    "Cache-Control": "no-store",
+                },
+            )
         except Exception as exc:
             _raise_http(exc)
 

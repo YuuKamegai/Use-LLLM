@@ -59,6 +59,7 @@ class Settings:
     endpoints: tuple[Endpoint, ...]
     selected_endpoint: str
     mcp_servers: tuple[MCPServerSpec, ...]
+    web_search_enabled: bool = False
 
 
 def default_settings() -> Settings:
@@ -140,15 +141,20 @@ def settings_to_json(settings: Settings) -> dict[str, Any]:
         "endpoints": [_endpoint_to_json(e) for e in settings.endpoints],
         "selected_endpoint": settings.selected_endpoint,
         "mcp_servers": [_server_to_json(s) for s in settings.mcp_servers],
+        "web_search_enabled": settings.web_search_enabled,
     }
 
 
 def settings_from_json(data: dict[str, Any]) -> Settings:
     try:
+        web_enabled = data.get("web_search_enabled", False)
+        if type(web_enabled) is not bool:
+            raise ValueError("web_search_enabledはbooleanで指定してください。")
         return Settings(
             endpoints=tuple(_endpoint_from_json(e) for e in data["endpoints"]),
             selected_endpoint=str(data["selected_endpoint"]),
             mcp_servers=tuple(_server_from_json(s) for s in data.get("mcp_servers", [])),
+            web_search_enabled=web_enabled,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigurationError(f"設定の形式が不正です: {exc}") from exc

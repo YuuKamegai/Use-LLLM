@@ -1,0 +1,95 @@
+import tempfile
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from tests.test_general_api import FakeOllama, secure_client
+from use_lllm.core.config import ConfigurationError
+from use_lllm.core.sessions import SessionStore
+from use_lllm.core.settings_store import (
+    default_settings,
+    load_settings,
+    save_settings,
+    settings_from_json,
+    settings_to_json,
+)
+from use_lllm.general.api import create_general_app
+
+
+def test_legacy_web_setting_defaults_off_and_round_trips():
+    raw = settings_to_json(default_settings())
+    raw.pop("web_search_enabled", None)
+    assert not settings_from_json(raw).web_search_enabled
+    raw["web_search_enabled"] = "false"
+    with pytest.raises(ConfigurationError):
+        settings_from_json(raw)
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "settings.json"
+        save_settings(path, replace(default_settings(), web_search_enabled=True))
+        assert load_settings(path).web_search_enabled
+
+
+@pytest.fixture
+def app_client(tmp_path):
+    app = create_general_app(
+        session_store=SessionStore(tmp_path), ollama_factory=lambda config: FakeOllama()
+    )
+    with secure_client(app) as client:
+        yield app, client
+
+
+def test_updates_web_settings_with_csrf_and_strict_payload(app_client):
+    app, client = app_client
+    assert not client.get("/api/settings").json()["web_search_enabled"]
+    assert client.put("/api/web-search", json={"enabled": True}).status_code == 200
+    assert client.get("/api/tools").json()["tools"] == ["web::search", "web::read_page"]
+    assert client.put("/api/web-search", json={"enabled": "false"}).status_code == 422
+    assert client.put("/api/web-search", json={"enabled": True, "url": "x"}).status_code == 422
+    assert (
+        client.put(
+            "/api/web-search", json={"enabled": False}, headers={"X-Use-LLLM-CSRF": "wrong"}
+        ).status_code
+        == 403
+    )
+    assert load_settings(app.state.runtime.settings_path).web_search_enabled
+
+
+def test_busy_rejects_web_toggle_without_partial_save(app_client):
+    app, client = app_client
+    runtime = app.state.runtime
+    runtime._active_turns.add("active")
+    response = client.put("/api/web-search", json={"enabled": True})
+    runtime._active_turns.clear()
+    assert response.status_code == 409
+    assert not runtime.settings.web_search_enabled
+
+
+def test_collision_rejected_and_connection_mutations_preserve_setting(app_client):
+    app, client = app_client
+    assert client.put("/api/web-search", json={"enabled": True}).status_code == 200
+    service = app.state.runtime.web_search
+    endpoint = {"name": "other", "base_url": "http://127.0.0.1:11434", "default_model": "fake"}
+    assert client.post("/api/endpoints", json=endpoint).status_code == 201
+    assert client.post("/api/endpoints/other/select").status_code == 200
+    assert client.put("/api/endpoints/other", json=endpoint).status_code == 200
+    assert client.delete("/api/endpoints/other").status_code == 200
+    assert app.state.runtime.web_search is service
+    assert client.get("/api/settings").json()["web_search_enabled"]
+    assert (
+        client.post("/api/mcp-servers", json={"name": "srv", "command": "python"}).status_code
+        == 201
+    )
+    assert (
+        client.post("/api/mcp-servers", json={"name": "web", "command": "python"}).status_code
+        == 409
+    )
+    assert (
+        client.put("/api/mcp-servers/srv", json={"name": "web", "command": "python"}).status_code
+        == 409
+    )
+    assert client.delete("/api/mcp-servers/srv").status_code == 200
+    assert client.get("/api/settings").json()["web_search_enabled"]
+    assert client.put("/api/web-search", json={"enabled": False}).status_code == 200
+    assert client.get("/api/tools").json()["tools"] == []
+    assert app.state.runtime.web_search is service
