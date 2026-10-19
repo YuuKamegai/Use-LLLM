@@ -80,19 +80,22 @@ function renderContextUsage() {
   else if (percent < 40) meter.classList.add("warning");
   label.textContent = overflow
     ? t("ツール定義が予算超過")
-    : `${provisional ? t("暫定残り") : t("残りコンテキスト")} ${percent}%`;
+    : `${provisional ? t("要約まで残り（暫定）") : t("要約まで残り")} ${percent}%`;
   fill.style.width = `${percent}%`;
   const compacted = usage.summary_created ? t(" 古い会話は直前の応答で要約されました。") : "";
   const source = provisional ? t("モデル上限未確認の暫定値。") : "";
-  const accuracy = usage.accuracy === "measured" ? t("トークン使用量は実測。") : t("トークン使用量は推定を含みます。");
+  const accuracy = usage.accuracy === "calibrated"
+    ? t("プロンプトは実測値、応答分は本文から推定（思考トークンは次のターンに残らないため除外）。")
+    : t("トークン使用量は推定値。");
   // ツール定義とシステムプロンプトは要約しても減らない固定費なので、会話枠と分けて示す。
   const fixed = Number.isFinite(Number(usage.fixed_tokens))
-    ? t`固定費（ツール定義・システム指示）${formatTokenCount(usage.fixed_tokens)}、会話枠 ${formatTokenCount(usage.conversation_budget)}。`
+    ? t`固定費（ツール定義・システム指示）${formatTokenCount(usage.fixed_tokens)}。`
     : "";
   const advice = overflow
     ? t("固定費だけで入力予算を超えているため自動要約を止めています。num_ctx を上げるか、不要なツールを無効化してください。")
     : "";
-  meter.title = t`${advice}${source}自動要約まで ${formatTokenCount(usage.remaining_tokens)} / ${formatTokenCount(usage.input_budget)} tokens。${fixed}使用 ${formatTokenCount(usage.used_tokens)}、モデル上限 ${formatTokenCount(usage.context_window)}。${accuracy}${compacted}`.trim();
+  // 分母は残り%と同じ会話枠。入力予算（=要約開始点）とモデル上限は別に示す。
+  meter.title = t`${advice}${source}自動要約まで ${formatTokenCount(usage.remaining_tokens)} / ${formatTokenCount(usage.conversation_budget)} tokens（会話枠）。${fixed}使用 ${formatTokenCount(usage.used_tokens)}、入力予算 ${formatTokenCount(usage.input_budget)}、モデル上限 ${formatTokenCount(usage.context_window)}。${accuracy}${compacted}`.trim();
 }
 
 async function loadSetup() {

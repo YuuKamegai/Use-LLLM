@@ -135,29 +135,29 @@ class ContextMemoryTests(unittest.IsolatedAsyncioTestCase):
                 model="fake",
                 response_content="確認しました。",
                 response_metadata={"step": 1},
-                prompt_eval_count=600,
+                prompt_eval_count=40,
             )
 
             self.assertEqual(assembled.context_window, 4096)
             self.assertEqual(assembled.input_budget, int(4096 * 0.65))
             self.assertGreater(assembled.tool_tokens, 0)
-            self.assertEqual(usage["prompt_tokens"], 600)
-            self.assertGreater(usage["used_tokens"], 600)
-            self.assertEqual(usage["accuracy"], "estimated")
+            self.assertEqual(usage["prompt_tokens"], 40)
+            self.assertGreater(usage["used_tokens"], 40)
+            self.assertEqual(usage["accuracy"], "calibrated")
             self.assertEqual(usage["measurement_source"], "provider_prompt_plus_response_estimate")
 
     async def test_azure_profile_uses_260k_budget_and_provider_usage(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             store = SessionStore(Path(raw) / "state")
             session = store.create_session("azure", surface="general")
-            store.add_message(session["id"], "user", "Azure context")
+            store.add_message(session["id"], "user", "Azure context " + "x" * 3_000)
             memory = ContextMemoryManager(AzureProfileSummarizer(), store)
             assembled = await memory.assemble(session["id"], "system", [])
             usage = await memory.context_usage(
                 assembled,
                 model="gpt-5.4-mini-2026-03-17",
                 response_content="done",
-                prompt_eval_count=9_000,
+                prompt_eval_count=800,
                 completion_eval_count=1_000,
             )
 
@@ -166,9 +166,10 @@ class ContextMemoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(usage["max_input_tokens"], 272_000)
             self.assertEqual(usage["max_output_tokens"], 128_000)
             self.assertTrue(usage["context_window_confirmed"])
-            self.assertEqual(usage["used_tokens"], 10_000)
-            self.assertEqual(usage["accuracy"], "measured")
-            self.assertEqual(usage["measurement_source"], "provider_usage")
+            self.assertEqual(usage["prompt_tokens"], 800)
+            self.assertEqual(usage["completion_tokens"], 1_000)
+            self.assertLess(usage["used_tokens"], 800 + 20)
+            self.assertEqual(usage["accuracy"], "calibrated")
 
     async def test_remaining_percent_is_measured_against_conversation_room(self) -> None:
         # ツール定義とシステムプロンプトは要約しても減らない固定費。残り%は
@@ -185,9 +186,12 @@ class ContextMemoryTests(unittest.IsolatedAsyncioTestCase):
                 assembled, model="fake", response_content="ok", prompt_eval_count=12_000
             )
 
-            fixed = assembled.fixed_tokens
-            self.assertGreater(fixed, assembled.tool_tokens)
-            self.assertEqual(usage["fixed_tokens"], fixed)
+            # 実測で換算係数が変わるので、固定費も同じ係数で換算し直される。
+            fixed = usage["fixed_tokens"]
+            self.assertGreater(assembled.fixed_tokens, assembled.tool_tokens)
+            self.assertAlmostEqual(
+                fixed / assembled.fixed_tokens, usage["token_scale"], places=2
+            )
             self.assertEqual(usage["conversation_budget"], assembled.input_budget - fixed)
             self.assertFalse(usage["fixed_overflow"])
             self.assertEqual(
@@ -215,6 +219,74 @@ class ContextMemoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(usage["fixed_overflow"])
             self.assertEqual(usage["conversation_budget"], 0)
             self.assertEqual(usage["remaining_percent"], 0)
+
+    async def test_measured_prompt_calibrates_compaction_to_the_displayed_scale(self) -> None:
+        # 表示は実測トークン、要約判定はバイト/3 の概算だと単位がずれ、メーターに
+        # 残りがあるうちに要約が走る。実測/概算の比率で判定側も換算する。
+        with tempfile.TemporaryDirectory() as raw:
+            store = SessionStore(Path(raw) / "state")
+            session = store.create_session("chat", surface="general")
+            store.add_message(session["id"], "user", "最初" + "あ" * 400)
+            summarizer = FakeSummarizer()
+            memory = ContextMemoryManager(summarizer, store, context_window=4096)
+            first = await memory.assemble(session["id"], "system", [])
+            usage = await memory.context_usage(
+                first,
+                model="fake",
+                response_content="了解",
+                prompt_eval_count=int(first.estimated_tokens * 0.6),
+            )
+            store.update_session(session["id"], state_patch={"context_usage": usage})
+            self.assertAlmostEqual(usage["token_scale"], 0.6, places=2)
+
+            # 概算では入力予算 2662 を超えるが、実測換算（×0.6）では収まる量。
+            for index in range(6):
+                store.add_message(session["id"], "assistant", f"回答{index}" + "い" * 260)
+                store.add_message(session["id"], "user", f"質問{index}" + "う" * 260)
+            assembled = await memory.assemble(session["id"], "system", [])
+
+            self.assertGreater(assembled.estimated_tokens / 0.6, assembled.input_budget)
+            self.assertLess(assembled.estimated_tokens, assembled.input_budget)
+            self.assertFalse(assembled.summary_created)
+            self.assertEqual(summarizer.calls, [])
+
+    async def test_implausible_measurement_does_not_calibrate(self) -> None:
+        # KV キャッシュ再利用時に新規評価分しか返らない実装では実測値が極端に小さい。
+        # それを信じると要約が遅れてモデル上限を溢れるので、採用しない。
+        with tempfile.TemporaryDirectory() as raw:
+            store = SessionStore(Path(raw) / "state")
+            session = store.create_session("chat", surface="general")
+            store.add_message(session["id"], "user", "あ" * 900)
+            memory = ContextMemoryManager(FakeSummarizer(), store, context_window=4096)
+            assembled = await memory.assemble(session["id"], "system", [])
+
+            usage = await memory.context_usage(
+                assembled, model="fake", response_content="ok", prompt_eval_count=12
+            )
+
+            self.assertEqual(usage["token_scale"], 1.0)
+            self.assertGreater(usage["prompt_tokens"], 900)
+            self.assertEqual(usage["measurement_source"], "local_estimate")
+
+    async def test_reasoning_tokens_are_not_counted_as_carried_history(self) -> None:
+        # eval_count には思考トークンが含まれるが、履歴に残るのは本文だけ。
+        with tempfile.TemporaryDirectory() as raw:
+            store = SessionStore(Path(raw) / "state")
+            session = store.create_session("chat", surface="general")
+            store.add_message(session["id"], "user", "考えて")
+            memory = ContextMemoryManager(FakeSummarizer(), store, context_window=32768)
+            assembled = await memory.assemble(session["id"], "system", [])
+
+            usage = await memory.context_usage(
+                assembled,
+                model="fake",
+                response_content="答え",
+                prompt_eval_count=assembled.estimated_tokens,
+                completion_eval_count=5_000,
+            )
+
+            self.assertEqual(usage["completion_tokens"], 5_000)
+            self.assertLess(usage["used_tokens"], assembled.estimated_tokens + 100)
 
     async def test_describe_tool_result_is_not_compacted(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

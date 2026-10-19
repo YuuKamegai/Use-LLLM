@@ -63,7 +63,12 @@ class GeneralUiContractTests(unittest.TestCase):
         self.assertIn("applySessionTitle", script)
         self.assertIn("function appendMessage(item)", script)
         self.assertIn("function renderContextUsage()", script)
-        self.assertIn("残りコンテキスト", script)
+        # 0% はモデル上限ではなく自動要約の開始点。ラベルでそれを明示する。
+        self.assertIn("要約まで残り", script)
+        self.assertNotIn("残りコンテキスト", script)
+        # ツールチップの分母は残り%と同じ会話枠にそろえる。
+        self.assertIn("formatTokenCount(usage.conversation_budget)} tokens", script)
+        self.assertIn('usage.accuracy === "calibrated"', script)
         self.assertIn('meter.classList.add("critical")', script)
         self.assertIn(".context-meter.warning", styles)
         self.assertIn(".context-meter.critical", styles)

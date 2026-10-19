@@ -48,7 +48,7 @@ class StreamingOllama(FakeOllama):
             "model": "fake",
             "message": {},
             "done": True,
-            "prompt_eval_count": 120,
+            "prompt_eval_count": 200,
             "eval_count": 8,
         }
 
@@ -141,7 +141,7 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     async def test_plain_chat_is_persisted(self) -> None:
-        ollama = FakeOllama([response("こんにちは。", prompt_eval_count=80, eval_count=6)])
+        ollama = FakeOllama([response("こんにちは。", prompt_eval_count=200, eval_count=6)])
         loop = GeneralAgentLoop(ollama, self.store, FakeRegistry({}))
 
         result = await loop.chat(self.session["id"], "こんにちは")
@@ -151,10 +151,10 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         messages = self.store.list_messages(self.session["id"])
         self.assertEqual([item["role"] for item in messages], ["user", "assistant"])
         usage = self.store.get_session(self.session["id"])["state"]["context_usage"]
-        self.assertEqual(usage["prompt_tokens"], 80)
-        self.assertEqual(usage["measurement_source"], "provider_usage")
+        self.assertEqual(usage["prompt_tokens"], 200)
+        self.assertEqual(usage["measurement_source"], "provider_prompt_plus_response_estimate")
         self.assertEqual(usage["completion_tokens"], 6)
-        self.assertEqual(usage["accuracy"], "measured")
+        self.assertEqual(usage["accuracy"], "calibrated")
 
     async def test_default_title_uses_first_user_message(self) -> None:
         session = self.store.create_session("新しいチャット", surface="general")
@@ -257,7 +257,7 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("".join(item.get("content", "") for item in events[1:3]), "こんにちは")
         self.assertEqual(self.store.list_messages(self.session["id"])[-1]["content"], "こんにちは")
         usage = self.store.get_session(self.session["id"])["state"]["context_usage"]
-        self.assertEqual(usage["prompt_tokens"], 120)
+        self.assertEqual(usage["prompt_tokens"], 200)
         self.assertEqual(events[-1]["context_usage"], usage)
 
     async def test_stream_chat_reports_automatic_title(self) -> None:

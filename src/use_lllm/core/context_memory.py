@@ -15,6 +15,11 @@ from use_lllm.core.sessions import SessionStore, compact_tool_result
 
 # 固定費を除いた会話の空きがこれ未満なら、要約しても会話が成り立たない。
 MIN_CONVERSATION_TOKENS = 512
+# 実測/概算の比がこの範囲外なら測定を信用しない。KV キャッシュ再利用時に
+# 新規評価分だけを返す実装では実測が極端に小さく、それで換算すると要約が遅れて溢れる。
+TOKEN_SCALE_RANGE = (0.5, 1.5)
+# これより小さいプロンプトの比はぶれが大きいので換算係数の更新に使わない。
+MIN_CALIBRATION_TOKENS = 256
 
 SUMMARY_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -54,6 +59,8 @@ class ContextAssembly:
     fixed_tokens: int = 0
     # 固定費だけで入力予算を使い切り、要約しても会話の空きが作れない状態。
     fixed_overflow: bool = False
+    # 概算トークンを実測の単位に直す係数。上のトークン数はすべて換算済み。
+    token_scale: float = 1.0
 
 
 def estimate_tokens(value: Any) -> int:
@@ -63,6 +70,10 @@ def estimate_tokens(value: Any) -> int:
         else json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     )
     return max(1, math.ceil(len(serialized.encode("utf-8")) / 3))
+
+
+def _scaled(tokens: int, scale: float) -> int:
+    return max(1, math.ceil(tokens * scale))
 
 
 def parse_summary_json(content: str) -> dict[str, Any]:
@@ -127,6 +138,12 @@ class ContextMemoryManager:
         if self._max_input_tokens is not None:
             budget = min(budget, self._max_input_tokens)
         return budget
+
+    def _token_scale(self, session_id: str) -> float:
+        usage = self.sessions.get_session(session_id)["state"].get("context_usage") or {}
+        value = usage.get("token_scale")
+        low, high = TOKEN_SCALE_RANGE
+        return float(value) if isinstance(value, (int, float)) and low <= value <= high else 1.0
 
     async def _resolve_context_window(self, *, refresh: bool = False) -> None:
         if self._context_resolved and not refresh:
@@ -291,6 +308,8 @@ class ContextMemoryManager:
         tools: list[dict[str, Any]],
     ) -> ContextAssembly:
         await self._resolve_context_window()
+        # 表示と要約判定を同じ単位にするため、前回の実測で求めた係数で概算を換算する。
+        scale = self._token_scale(session_id)
         stored = self.sessions.list_messages(session_id)
         prior = self.sessions.latest_conversation_summary(session_id)
         covered = int(prior["last_message_id"]) if prior else 0
@@ -320,14 +339,14 @@ class ContextMemoryManager:
             return result
 
         messages = render(prior)
-        tool_tokens = estimate_tokens(tools)
-        fixed_tokens = tool_tokens + estimate_tokens([messages[0]])
+        tool_tokens = _scaled(estimate_tokens(tools), scale)
+        fixed_tokens = tool_tokens + _scaled(estimate_tokens([messages[0]]), scale)
         input_budget = self._input_budget()
         message_budget = input_budget - tool_tokens
         # 固定費だけで予算が埋まっているなら、会話を要約しても収まらない。
         # 毎ターン要約 LLM を回して履歴を失うだけなので、要約せずに警告に回す。
         fixed_overflow = input_budget - fixed_tokens < MIN_CONVERSATION_TOKENS
-        while not fixed_overflow and estimate_tokens(messages) > message_budget:
+        while not fixed_overflow and _scaled(estimate_tokens(messages), scale) > message_budget:
             boundary = self._recent_boundary(raw)
             candidates = [item for item in raw if boundary and int(item["id"]) < boundary]
             if not candidates:
@@ -352,13 +371,14 @@ class ContextMemoryManager:
 
         return ContextAssembly(
             messages,
-            estimate_tokens(messages),
+            _scaled(estimate_tokens(messages), scale),
             summary_created,
             self.context_window,
             input_budget,
             tool_tokens,
             fixed_tokens,
             fixed_overflow,
+            scale,
         )
 
     async def context_usage(
@@ -377,11 +397,21 @@ class ContextMemoryManager:
             await self._resolve_context_window(refresh=True)
         context_window = self.context_window
         input_budget = self._input_budget()
+        old_scale = assembled.token_scale
+        raw_prompt = (assembled.estimated_tokens + assembled.tool_tokens) / old_scale
         measured_prompt = (
             prompt_eval_count
             if isinstance(prompt_eval_count, int) and prompt_eval_count >= 0
             else None
         )
+        scale = old_scale
+        if measured_prompt is not None:
+            ratio = measured_prompt / raw_prompt
+            low, high = TOKEN_SCALE_RANGE
+            if not low <= ratio <= high:
+                measured_prompt = None
+            elif raw_prompt >= MIN_CALIBRATION_TOKENS:
+                scale = ratio
         prompt_tokens = (
             measured_prompt
             if measured_prompt is not None
@@ -398,17 +428,16 @@ class ContextMemoryManager:
             if isinstance(completion_eval_count, int) and completion_eval_count >= 0
             else None
         )
-        response_tokens = (
-            measured_completion
-            if measured_completion is not None
-            else estimate_tokens(response_item)
-        )
+        # 実測の生成数には思考トークンが含まれるが、次のターンに持ち越すのは
+        # 保存した本文だけなので、応答分は本文から見積もる。
+        response_tokens = _scaled(estimate_tokens(response_item), scale)
         used_tokens = prompt_tokens + response_tokens
         remaining_tokens = max(0, input_budget - used_tokens)
         # 残り%の分母は「会話に使える分」。ツール定義などの固定費は要約で
         # 減らないので、入力予算全体を分母にすると開始時点から枯渇して見える。
-        fixed_overflow = input_budget - assembled.fixed_tokens < MIN_CONVERSATION_TOKENS
-        conversation_budget = 0 if fixed_overflow else input_budget - assembled.fixed_tokens
+        fixed_tokens = _scaled(round(assembled.fixed_tokens / old_scale), scale)
+        fixed_overflow = input_budget - fixed_tokens < MIN_CONVERSATION_TOKENS
+        conversation_budget = 0 if fixed_overflow else input_budget - fixed_tokens
         remaining_percent = (
             0
             if fixed_overflow
@@ -426,31 +455,18 @@ class ContextMemoryManager:
             "remaining_tokens": remaining_tokens,
             "remaining_percent": remaining_percent,
             "prompt_tokens": prompt_tokens,
-            "response_tokens_estimate": (
-                None if measured_completion is not None else response_tokens
-            ),
+            "response_tokens_estimate": response_tokens,
             "completion_tokens": measured_completion,
             "tool_tokens_estimate": assembled.tool_tokens,
-            "fixed_tokens": assembled.fixed_tokens,
+            "fixed_tokens": fixed_tokens,
             "conversation_budget": conversation_budget,
             "fixed_overflow": fixed_overflow,
-            "accuracy": (
-                "measured"
-                if measured_prompt is not None and measured_completion is not None
-                else "estimated"
-            ),
+            "token_scale": round(scale, 4),
+            "accuracy": "calibrated" if measured_prompt is not None else "estimated",
             "measurement_source": (
-                "provider_usage"
-                if measured_prompt is not None and measured_completion is not None
-                else (
-                    "provider_prompt_plus_response_estimate"
-                    if measured_prompt is not None
-                    else (
-                        "local_prompt_plus_provider_completion"
-                        if measured_completion is not None
-                        else "local_estimate"
-                    )
-                )
+                "provider_prompt_plus_response_estimate"
+                if measured_prompt is not None
+                else "local_estimate"
             ),
             "summary_created": assembled.summary_created,
         }
