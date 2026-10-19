@@ -1,7 +1,8 @@
 # Use-LLLM Linux 版 設計
 
 作成日: 2026-10-19（日本時間）
-状態: 構成合意済み。本文はレビュー待ち。製品コードの実装は未着手。
+状態: 本文はユーザーレビューで承認済み。製品コードの実装は未着手。
+配置の追記: ユーザー指定により Linux 側の ~/Use-LLLM-Linux をアプリ配置先とする。
 
 ## 1. 目的と合意した条件
 
@@ -17,7 +18,7 @@
 - 起動の正常応答を確認してブラウザーを開く。既存プロセスがあれば再利用する。
 - API キーは Secret Service を利用し、利用不能時に平文へフォールバックしない。
 
-本書の更新・障害対応・完了条件は、上記の合意を具体化した提案としてレビュー対象とする。
+更新・障害対応・完了条件を含む本文は承認済み。配置先はその後の指定を反映する。
 
 ## 2. 対象外
 
@@ -55,8 +56,9 @@ OS の Python を書き換えず、sudo pip は使用しない。仮想環境は
 
 | 種類 | 標準位置 |
 |---|---|
-| アプリ・各リリース | ~/.local/share/use-lllm/app/releases/<release-id>/ |
-| 有効リリースへの参照 | ~/.local/share/use-lllm/app/current |
+| アプリ配置ルート | ~/Use-LLLM-Linux/ |
+| アプリ・各リリースと専用 .venv | ~/Use-LLLM-Linux/releases/<release-id>/ |
+| 有効リリースへの参照 | ~/Use-LLLM-Linux/current |
 | 起動入口 | ~/.local/bin/use-lllm-webui |
 | アプリ一覧の項目 | ~/.local/share/applications/use-lllm.desktop |
 | 設定・初回設定 | ~/.config/use-lllm/ |
@@ -64,6 +66,8 @@ OS の Python を書き換えず、sudo pip は使用しない。仮想環境は
 | ログ | ~/.local/state/use-lllm/logs/ |
 | 起動管理情報 | $XDG_RUNTIME_DIR/use-lllm/ |
 
+上記の ~/ は配布先 Linux ユーザーのホームであり、Windows 側のホームではない。
+アプリ配置ルートは XDG 変数では変更せず、設定・データ・ログ・アプリ一覧の配置に XDG を適用する。
 XDG_RUNTIME_DIR が利用できない場合は所有者専用の状態ディレクトリを使う。
 USE_LLLM_DATA_DIR を明示した運用では、互換性のため既存どおりその配下に
 DB・成果物・設定をまとめる。設定・データのファイルは 0600、専用ディレクトリは 0700 を基本とする。
