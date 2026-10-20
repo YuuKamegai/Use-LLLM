@@ -196,6 +196,9 @@ class GeneralUiContractTests(unittest.TestCase):
         self.assertIn('start.ArgumentList.Add("-Port")', exe_source)
         self.assertIn('start.ArgumentList.Add("-NoBrowser")', exe_source)
         self.assertIn("$env:USE_LLLM_WEB_PORT = [string]$Port", launcher)
+        # 既定ポートを固定すると他アプリと競合する。省略時はサーバー側の自動選択に任せる。
+        self.assertIn("[int]$Port = 0", launcher)
+        self.assertIn("if ($Port -gt 0)", launcher)
         self.assertIn("api/launcher-health", exe_source)
         self.assertIn('TryGetProperty("static_ready"', exe_source)
         self.assertIn("ServerState.Incompatible", exe_source)

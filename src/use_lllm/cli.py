@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import socket
 import sys
 from typing import Sequence
 
@@ -15,6 +17,39 @@ from use_lllm.core.mcp_client import (
     MCPConnectionError,
     MCPServerSnapshot,
 )
+
+# 既定で優先するポート。他アプリが使っていれば空きポートに逃がす。
+DEFAULT_WEB_PORT = 8765
+
+
+def _bind_web_socket(
+    host: str, requested: int | None, *, preferred: int = DEFAULT_WEB_PORT
+) -> socket.socket:
+    """Bind the WebUI listener, falling back to a free port unless one was requested."""
+
+    def bind(port: int) -> socket.socket:
+        family = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0][0]
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            # Windows の既定ではワイルドカード待受中のポートにも特定アドレスで
+            # bind できてしまうため、排他指定で本当に空いているかを確かめる。
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            else:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((host, port))
+            sock.listen()
+        except OSError:
+            sock.close()
+            raise
+        return sock
+
+    if requested is not None:
+        return bind(requested)
+    try:
+        return bind(preferred)
+    except OSError:
+        return bind(0)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -50,7 +85,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     serve = subparsers.add_parser("serve", help="loopback限定WebUIを起動する")
     serve.add_argument("--host", default="127.0.0.1", choices=["127.0.0.1", "localhost", "::1"])
-    serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument(
+        "--port", type=int, help=f"待受ポート（省略時は{DEFAULT_WEB_PORT}、使用中なら空きポート）"
+    )
     serve.add_argument("--open", action="store_true", help="起動後に既定ブラウザを開く")
     return parser
 
@@ -71,21 +108,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
     if args.command == "serve":
-        if not 1 <= args.port <= 65535:
+        if args.port is not None and not 1 <= args.port <= 65535:
             print("ポートは1〜65535で指定してください。", file=sys.stderr)
             return 2
+        try:
+            # 確保したソケットをそのまま uvicorn に渡し、確認後に奪われる隙をなくす。
+            sock = _bind_web_socket(args.host, args.port)
+        except OSError as exc:
+            print(f"ポート{args.port}を使用できません: {exc}", file=sys.stderr)
+            return 1
+        port = sock.getsockname()[1]
+        # OAuth の redirect_uri などが実際の待受ポートを参照する。
+        os.environ["USE_LLLM_WEB_PORT"] = str(port)
+        url_host = f"[{args.host}]" if ":" in args.host else args.host
+        url = f"http://{url_host}:{port}/general/"
+        print(f"Use-LLLM WebUI: {url}", flush=True)
         if args.open:
             import threading
             import webbrowser
 
-            threading.Timer(
-                1.2,
-                webbrowser.open,
-                args=(f"http://{args.host}:{args.port}/general/",),
-            ).start()
+            threading.Timer(1.2, webbrowser.open, args=(url,)).start()
         import uvicorn
 
-        uvicorn.run("use_lllm.app:app", host=args.host, port=args.port, log_level="info")
+        config = uvicorn.Config("use_lllm.app:app", host=args.host, port=port, log_level="info")
+        with sock:
+            uvicorn.Server(config).run(sockets=[sock])
         return 0
 
     if args.command == "ollama-smoke":

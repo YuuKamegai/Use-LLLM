@@ -1,6 +1,7 @@
 ﻿[CmdletBinding()]
 param(
-    [int]$Port = 8765,
+    # 0 は自動（8765 を優先し、使用中なら空きポート）。
+    [int]$Port = 0,
     [switch]$NoBrowser
 )
 
@@ -54,8 +55,11 @@ $env:PYTHONPATH = if ([string]::IsNullOrWhiteSpace($env:PYTHONPATH)) {
 } else {
     $SourceRoot + [IO.Path]::PathSeparator + $env:PYTHONPATH
 }
-$env:USE_LLLM_WEB_PORT = [string]$Port
-$arguments = @("-m", "use_lllm", "serve", "--host", "127.0.0.1", "--port", $Port)
+$arguments = @("-m", "use_lllm", "serve", "--host", "127.0.0.1")
+if ($Port -gt 0) {
+    $env:USE_LLLM_WEB_PORT = [string]$Port
+    $arguments += @("--port", $Port)
+}
 if (-not $NoBrowser) {
     $arguments += "--open"
 }
